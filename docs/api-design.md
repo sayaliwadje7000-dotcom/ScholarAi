@@ -1,149 +1,190 @@
-@'
 # ScholarAI — API Design
 
 ## 1. Purpose
 
-This document defines the planned API structure for ScholarAI.
+This document describes the API structure of ScholarAI, an AI-powered academic learning platform.
 
-The backend will use FastAPI and expose versioned HTTP endpoints for academic assistance, document processing, assessments, recommendations, resource discovery, and learning progress.
+The backend uses FastAPI and is being developed incrementally. This document distinguishes currently implemented endpoints from planned endpoints.
 
-The endpoints documented here are planned interfaces. They are not necessarily implemented yet.
+**Important:** An endpoint listed as planned is a design specification, not a working feature.
 
 ## 2. API Conventions
 
-- API prefix: /api/v1
-- Request and response format: JSON unless the operation requires file upload or another content type.
-- GET: Retrieve resources.
-- POST: Create resources or initiate operations.
-- PUT: Replace a resource.
-- PATCH: Partially update a resource.
-- DELETE: Delete a resource.
-- Validate incoming requests.
-- Return consistent error responses.
-- Protect private endpoints with appropriate authentication and authorization when implemented.
-- Document request and response schemas.
+* API prefix for versioned endpoints: `/api/v1`
+* Data format: JSON, except where file uploads or other content types are required.
+* GET: Retrieve resources.
+* POST: Create resources or initiate operations.
+* PUT: Replace a resource.
+* PATCH: Partially update a resource.
+* DELETE: Delete a resource.
+* Validate incoming requests.
+* Return appropriate HTTP status codes and structured error responses.
+* Add authentication and authorization where required.
+* Document request and response schemas.
 
-## 3. Planned API Endpoints
+## 3. Implemented Endpoints
 
-### Health
+The following endpoints currently exist in the backend.
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| GET | /health | Check application health |
+| Method | Endpoint       | Purpose                                           | Current Status                                   |
+| ------ | -------------- | ------------------------------------------------- | ------------------------------------------------ |
+| GET    | `/`            | Return application information and status         | Implemented                                      |
+| GET    | `/health`      | Check application health                          | Implemented                                      |
+| POST   | `/api/v1/chat` | Accept an academic question and return a response | Implemented with a temporary placeholder service |
 
-### Academic Chat and Conversations
+### Current Chat Limitations
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| POST | /api/v1/chat | Ask an academic question |
-| GET | /api/v1/conversations | Retrieve conversation history |
-| GET | /api/v1/conversations/{conversation_id} | Retrieve a conversation |
-| DELETE | /api/v1/conversations/{conversation_id} | Delete a conversation |
+The chat endpoint currently validates the request and returns a temporary response.
 
-### Documents
+It does not yet use a Large Language Model (LLM) to generate genuine AI-powered academic answers. LLM integration is planned for Phase 5.
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| POST | /api/v1/documents | Upload a document |
-| GET | /api/v1/documents | List the current user's documents |
-| GET | /api/v1/documents/{document_id} | Retrieve document metadata and processing status |
-| DELETE | /api/v1/documents/{document_id} | Delete a document |
-| POST | /api/v1/documents/{document_id}/questions | Ask a question about a document |
-| POST | /api/v1/documents/{document_id}/summary | Generate a document summary |
+Conversation history is not yet stored in a database.
 
-### Assessments
+## 4. Planned API Endpoints
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| POST | /api/v1/assessments/generate | Generate practice questions or an assessment |
-| GET | /api/v1/assessments/{assessment_id} | Retrieve an assessment |
-| POST | /api/v1/assessments/{assessment_id}/submissions | Submit answers and evaluate a submission |
+The following endpoints describe future functionality. They are **not implemented yet**.
 
-### Recommendations
+### 4.1 Academic Chat and Conversations
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| POST | /api/v1/recommendations | Generate a unified list of recommendations |
+| Method | Endpoint                                  | Purpose                          |
+| ------ | ----------------------------------------- | -------------------------------- |
+| GET    | `/api/v1/conversations`                   | Retrieve conversation history    |
+| GET    | `/api/v1/conversations/{conversation_id}` | Retrieve a specific conversation |
+| DELETE | `/api/v1/conversations/{conversation_id}` | Delete a conversation            |
 
-The recommendation service will combine rule-based filtering, content-based relevance, and ML-based ranking.
+### 4.2 Documents
 
-### Educational Resource Discovery
+| Method | Endpoint                                    | Purpose                                          |
+| ------ | ------------------------------------------- | ------------------------------------------------ |
+| POST   | `/api/v1/documents`                         | Upload a document                                |
+| GET    | `/api/v1/documents`                         | List the user's documents                        |
+| GET    | `/api/v1/documents/{document_id}`           | Retrieve document metadata and processing status |
+| DELETE | `/api/v1/documents/{document_id}`           | Delete a document                                |
+| POST   | `/api/v1/documents/{document_id}/questions` | Ask a question about a document                  |
+| POST   | `/api/v1/documents/{document_id}/summary`   | Generate a document summary                      |
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| GET | /api/v1/resources/search | Search for educational resources |
+### 4.3 Assessments
 
-### Opportunity Discovery
+| Method | Endpoint                                          | Purpose                                      |
+| ------ | ------------------------------------------------- | -------------------------------------------- |
+| POST   | `/api/v1/assessments/generate`                    | Generate practice questions or an assessment |
+| GET    | `/api/v1/assessments/{assessment_id}`             | Retrieve an assessment                       |
+| POST   | `/api/v1/assessments/{assessment_id}/submissions` | Submit answers and evaluate a submission     |
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| GET | /api/v1/opportunities/search | Search for relevant events and opportunities |
+### 4.4 Recommendations
 
-### Learning and Personalization
+| Method | Endpoint                  | Purpose                                    |
+| ------ | ------------------------- | ------------------------------------------ |
+| POST   | `/api/v1/recommendations` | Generate a unified list of recommendations |
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| GET | /api/v1/learning/profile | Retrieve the user's learning profile |
-| GET | /api/v1/learning/progress | Retrieve learning progress |
-| GET | /api/v1/learning/recommendations | Retrieve personalized learning recommendations |
+The planned recommendation system will evolve through rule-based filtering, content-based relevance, and machine-learning-based ranking.
 
-## 4. Example Chat Request
+### 4.5 Educational Resource Discovery
 
-POST /api/v1/chat
+| Method | Endpoint                   | Purpose                          |
+| ------ | -------------------------- | -------------------------------- |
+| GET    | `/api/v1/resources/search` | Search for educational resources |
 
-Request:
+### 4.6 Opportunity Discovery
 
-    {
-      "message": "Explain machine learning in simple terms.",
-      "conversation_id": null
-    }
+| Method | Endpoint                       | Purpose                                      |
+| ------ | ------------------------------ | -------------------------------------------- |
+| GET    | `/api/v1/opportunities/search` | Search for relevant events and opportunities |
 
-Illustrative response:
+### 4.7 Learning and Personalization
 
-    {
-      "answer": "Machine learning enables computers to learn patterns from data.",
-      "conversation_id": "example-conversation-id",
-      "status": "success"
-    }
+| Method | Endpoint                           | Purpose                                        |
+| ------ | ---------------------------------- | ---------------------------------------------- |
+| GET    | `/api/v1/learning/profile`         | Retrieve the user's learning profile           |
+| GET    | `/api/v1/learning/progress`        | Retrieve learning progress                     |
+| GET    | `/api/v1/learning/recommendations` | Retrieve personalized learning recommendations |
 
-The response is illustrative. The final schema and conversation identifier will be defined during implementation.
+These endpoints will be designed and implemented when their supporting features are developed.
 
-## 5. Recommendation Architecture
+## 5. Example Chat Request
+
+**Endpoint:** `POST /api/v1/chat`
+
+### Request
+
+```json
+{
+  "message": "Explain machine learning in simple terms.",
+  "conversation_id": null
+}
+```
+
+### Illustrative Response
+
+```json
+{
+  "answer": "ScholarAI received your question: Explain machine learning in simple terms.\n\nAI-powered academic responses will be available after LLM integration.",
+  "conversation_id": null,
+  "status": "success"
+}
+```
+
+This response illustrates the current placeholder implementation. It is not an AI-generated academic answer.
+
+The request validates the message and accepts an optional conversation ID. Persistent conversation management has not yet been implemented.
+
+## 6. Planned Recommendation Architecture
 
 The planned recommendation workflow is:
 
 1. Receive the student's query and preferences.
 2. Retrieve candidate resources.
-3. Apply hard constraints and recommendation rules.
+3. Apply relevant rules and constraints.
 4. Calculate content-based relevance.
-5. Rank suitable candidates using the ML model when available.
-6. Validate final results.
+5. Rank suitable candidates using a machine-learning model when available.
+6. Validate the results.
 7. Return recommendations with source information and explanations where possible.
 
-The exact pipeline will be refined through testing and evaluation.
+The exact workflow will be refined during implementation and evaluation.
 
-## 6. Error Handling
+## 7. Error Handling
 
-The backend should distinguish between:
+The backend should handle errors such as:
 
-- Invalid requests.
-- Missing resources.
-- Unauthorized access.
-- Rate-limit violations.
-- External service failures.
-- Internal server errors.
+* Invalid request data.
+* Missing resources.
+* Unauthorized access.
+* Rate-limit violations.
+* External service failures.
+* Internal server errors.
 
-Responses should provide useful error messages without exposing secrets or internal implementation details.
+The current chat request uses Pydantic validation and FastAPI's default structured validation-error responses.
 
-## 7. Versioning and Compatibility
+More comprehensive error handling will be added as the application grows. Error responses must not expose secrets or sensitive internal details.
 
-The /api/v1 prefix identifies the first planned API version.
+## 8. Versioning and Compatibility
 
-Changes to request and response schemas should be managed deliberately to avoid breaking existing clients.
+The `/api/v1` prefix identifies the first version of the planned versioned API.
 
-## 8. Implementation Status
+Changes to request and response schemas should be managed carefully to avoid breaking existing clients.
 
-The endpoints in this document are planned interfaces.
+## 9. Implementation Status
 
-Each endpoint will be implemented, tested, and documented in the phase associated with its functionality.
-'@ | Set-Content -Path "docs\api-design.md" -Encoding utf8
+ScholarAI is being developed incrementally according to its 22-phase roadmap.
+
+Currently implemented:
+
+* Basic application endpoint.
+* Health-check endpoint.
+* Initial chat endpoint.
+* Chat request validation.
+* Initial automated API tests.
+
+Still planned:
+
+* LLM integration.
+* Conversation persistence.
+* Document processing and question answering.
+* Assessments.
+* Recommendation engines.
+* Educational resource and opportunity discovery.
+* Learning progress and personalization.
+* Authentication and security.
+
+**Implementation rule:** An endpoint or feature should only be marked implemented after its functionality has been developed and appropriately tested.
+

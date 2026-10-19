@@ -56,3 +56,30 @@ def test_chat_rejects_invalid_message_type():
     )
 
     assert response.status_code == 422
+    
+def test_chat_rejects_whitespace_only_message():
+    response = client.post(
+        "/api/v1/chat",
+        json={
+            "message": "     ",
+            "conversation_id": None,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_chat_strips_message_whitespace():
+    response = client.post(
+        "/api/v1/chat",
+        json={
+            "message": "   Explain machine learning.   ",
+            "conversation_id": None,
+        },
+    )
+
+    assert response.status_code == 200
+    assert "received your question: Explain machine learning." in (
+        response.json()["answer"]
+    )
+

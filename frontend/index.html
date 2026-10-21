@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <meta
+        name="description"
+        content="ScholarAI — Your personal AI-powered academic learning workspace."
+    >
+
+    <title>ScholarAI — Learning Workspace</title>
+
+    <link rel="stylesheet" href="css/style.css">
+    <script src="js/app.js" defer></script>
+</head>
+
+<body>
+    <div class="app-layout">
+
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <a href="#" class="brand">
+                <span class="brand-icon">S</span>
+                <span class="brand-name">Scholar<span>AI</span></span>
+            </a>
+
+            <div class="workspace-label">WORKSPACE</div>
+
+            <nav class="sidebar-nav" aria-label="Main navigation">
+                <a href="#" class="nav-item active" aria-current="page">
+                    <span class="nav-icon">⌂</span>
+                    <span>Overview</span>
+                </a>
+
+                <a href="#" class="nav-item">
+                    <span class="nav-icon">✳</span>
+                    <span>AI Assistant</span>
+                    <span class="nav-tag">AI</span>
+                </a>
+
+                <a href="#" class="nav-item">
+                    <span class="nav-icon">▤</span>
+                    <span>My Documents</span>
+                </a>
+
+                <a href="#" class="nav-item">
+                    <span class="nav-icon">✓</span>
+                    <span>Practice & Tests</span>
+                </a>
+
+                <div class="sidebar-divider"></div>
+
+                <div class="workspace-label">DISCOVER</div>
+
+                <a href="#" class="nav-item">
+                    <span class="nav-icon">⌕</span>
+                    <span>Learning Resources</span>
+                </a>
+
+                <a href="#" class="nav-item">
+                    <span class="nav-icon">↗</span>
+                    <span>Opportunities</span>
+                </a>
+
+                <div class="sidebar-divider"></div>
+
+                <div class="workspace-label">YOUR LEARNING</div>
+
+                <a href="#" class="nav-item">
+                    <span class="nav-icon">▥</span>
+                    <span>Learning Progress</span>
+                </a>
+
+                <a href="#" class="nav-item">
+                    <span class="nav-icon">◇</span>
+                    <span>Recommendations</span>
+                </a>
+            </nav>
+
+
+            <!-- Phase 3.7: Local conversation history -->
+            <section class="conversation-history" aria-label="Conversation history">
+                <div class="conversation-history-heading">
+                    <span class="workspace-label">YOUR CONVERSATIONS</span>
+                    <button
+                        type="button"
+                        class="new-conversation-button"
+                        id="new-conversation"
+                        aria-label="Start a new conversation"
+                        title="New conversation"
+                    >+</button>
+                </div>
+
+                <div class="conversation-group" id="pinned-conversations-group" hidden>
+                    <p class="conversation-group-label">PINNED</p>
+                    <div id="pinned-conversations" class="conversation-list"></div>
+                </div>
+
+                <div class="conversation-group">
+                    <p class="conversation-group-label">RECENT</p>
+                    <div id="conversation-list" class="conversation-list"></div>
+                    <p id="empty-conversation-history" class="conversation-empty">
+                        Your conversations will appear here.
+                    </p>
+                </div>
+            </section>
+
+            <div class="sidebar-bottom">
+                <div class="sidebar-help">
+                    <div class="help-icon">?</div>
+                    <div>
+                        <p class="help-title">Need help?</p>
+                        <p class="help-description">Your learning journey starts here.</p>
+                    </div>
+                </div>
+
+                <div class="profile">
+                    <div class="avatar">S</div>
+                    <div class="profile-info">
+                        <p class="profile-name">Student</p>
+                        <p class="profile-role">Learning workspace</p>
+                    </div>
+                    <span class="profile-menu">···</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main workspace -->
+        <main class="main-content">
+
+            <!-- Top bar -->
+            <header class="topbar">
+                <div>
+                    <p class="breadcrumb">Workspace <span>/</span> Overview</p>
+                </div>
+
+                <div class="topbar-actions">
+                    <span class="system-status">
+                        <span class="status-dot"></span>
+                        Workspace preview
+                    </span>
+
+                    <button
+                        class="icon-button"
+                        type="button"
+                        aria-label="Notifications"
+                        title="Notifications"
+                    >♧</button>
+                </div>
+            </header>
+
+            <!-- Dashboard content -->
+            <div class="dashboard-content">
+
+                <!-- Chat-style search bar -->
+                <section class="search-section" aria-label="Ask ScholarAI">
+                    <form class="chat-search" role="search" action="#" method="get">
+                        <span class="search-symbol" aria-hidden="true">⌕</span>
+                        <input
+                            type="search"
+                            name="q"
+                            aria-label="Ask a question"
+                            placeholder="Ask anything about your studies..."
+                            autocomplete="off"
+                        >
+                        <button class="search-submit" type="submit" aria-label="Send question" title="Send">
+                            ↑
+                        </button>
+                    </form>
+                    <p class="search-hint">Ask a question, explore a topic, or get help with your studies.</p>
+                </section>
+
+                <!-- Overview heading -->
+                <section class="section-heading">
+                    <div>
+                        <h2>Your overview</h2>
+                        <p class="section-description">
+                            Your learning activity at a glance.
+                        </p>
+                    </div>
+
+                    <span class="date-label" id="current-date">
+                        Your learning workspace
+                    </span>
+                </section>
+
+                <!-- Statistics -->
+                <section class="stats-grid" aria-label="Learning statistics">
+
+                    <article class="stat-card">
+                        <div class="stat-top">
+                            <span class="stat-label">Documents</span>
+                            <span class="stat-icon">▤</span>
+                        </div>
+
+                        <p class="stat-value">—</p>
+                        <p class="stat-note">Documents processed</p>
+                    </article>
+
+                    <article class="stat-card">
+                        <div class="stat-top">
+                            <span class="stat-label">Study sessions</span>
+                            <span class="stat-icon">◷</span>
+                        </div>
+
+                        <p class="stat-value">—</p>
+                        <p class="stat-note">Sessions completed</p>
+                    </article>
+
+                    <article class="stat-card">
+                        <div class="stat-top">
+                            <span class="stat-label">Assessments</span>
+                            <span class="stat-icon">✓</span>
+                        </div>
+
+                        <p class="stat-value">—</p>
+                        <p class="stat-note">Assessments completed</p>
+                    </article>
+
+                    <article class="stat-card">
+                        <div class="stat-top">
+                            <span class="stat-label">Learning progress</span>
+                            <span class="stat-icon">↗</span>
+                        </div>
+
+                        <p class="stat-value">—</p>
+                        <p class="stat-note">Progress will appear here</p>
+                    </article>
+
+                </section>
+
+                <!-- Quick actions -->
+                <section class="section-block">
+                    <div class="section-heading">
+                        <div>
+                            <h2>Pick up where you want to go</h2>
+                            <p class="section-description">
+                                Shortcuts to your learning tools.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="actions-grid">
+
+                        <article class="action-card assistant-card" tabindex="0" role="button" aria-label="Study with AI">
+                            <div class="action-icon dark-icon">✳</div>
+
+                            <span class="action-label">AI LEARNING</span>
+
+                            <h3>Study with AI</h3>
+
+                            <p>
+                                Explore an AI assistant designed to support
+                                your academic learning.
+                            </p>
+
+                            <span class="action-link">
+                                Explore assistant <span>↗</span>
+                            </span>
+                        </article>
+
+                        <article class="action-card" tabindex="0" role="button">
+                            <div class="action-icon">▤</div>
+
+                            <span class="action-label">YOUR MATERIALS</span>
+
+                            <h3>My documents</h3>
+
+                            <p>
+                                Keep your study materials organised in
+                                one learning workspace.
+                            </p>
+
+                            <span class="action-link">
+                                Explore documents <span>↗</span>
+                            </span>
+                        </article>
+
+                        <article class="action-card" tabindex="0" role="button">
+                            <div class="action-icon">✓</div>
+
+                            <span class="action-label">PRACTICE</span>
+
+                            <h3>Test your knowledge</h3>
+
+                            <p>
+                                Discover the planned practice and
+                                assessment experience.
+                            </p>
+
+                            <span class="action-link">
+                                Explore practice <span>↗</span>
+                            </span>
+                        </article>
+
+                    </div>
+                </section>
+
+                <!-- Discovery section -->
+                <section class="section-block discovery-section">
+                    <div class="section-heading">
+                        <div>
+                            <h2>More for your journey</h2>
+                            <p class="section-description">
+                                A bigger picture of your academic growth.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="discovery-grid">
+
+                        <article class="discovery-card" tabindex="0" role="button">
+                            <div class="discovery-icon">⌕</div>
+
+                            <div class="discovery-copy">
+                                <h3>Discover resources</h3>
+                                <p>
+                                    Find relevant learning materials
+                                    and educational resources.
+                                </p>
+                            </div>
+
+                            <span class="discovery-arrow">↗</span>
+                        </article>
+
+                        <article class="discovery-card" tabindex="0" role="button">
+                            <div class="discovery-icon">◇</div>
+
+                            <div class="discovery-copy">
+                                <h3>Explore opportunities</h3>
+                                <p>
+                                    Work towards discovering internships,
+                                    programmes, and other opportunities.
+                                </p>
+                            </div>
+
+                            <span class="discovery-arrow">↗</span>
+                        </article>
+
+                        <article class="discovery-card" tabindex="0" role="button">
+                            <div class="discovery-icon">▥</div>
+
+                            <div class="discovery-copy">
+                                <h3>Track your growth</h3>
+                                <p>
+                                    Your personalised learning insights
+                                    will live here as features are built.
+                                </p>
+                            </div>
+
+                            <span class="discovery-arrow">↗</span>
+                        </article>
+
+                    </div>
+                </section>
+
+                <!-- Honest development status -->
+                <footer class="dashboard-footer">
+                    <span class="footer-brand">ScholarAI</span>
+                    <span>Learning workspace preview · Features are being built</span>
+                </footer>
+
+            </div>
+        </main>
+    </div>
+<!-- ScholarAI Toast Notifications -->
+<div
+    id="toast-container"
+    class="toast-container"
+    aria-live="polite"
+    aria-atomic="false"
+></div>
+</body>
+</html>

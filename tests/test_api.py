@@ -127,6 +127,52 @@ def test_chat_validation_error_response_structure():
 
     assert error["loc"] == ["body", "message"]
     assert error["type"] == "string_too_short"
+def test_cors_allows_local_frontend_origin():
+    response = client.options(
+        "/api/v1/chat",
+        headers={
+            "Origin": "http://127.0.0.1:5500",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
 
+    assert response.status_code == 200
+    assert (
+        response.headers["access-control-allow-origin"]
+        == "http://127.0.0.1:5500"
+    )
+
+
+def test_cors_allows_localhost_frontend_origin():
+    response = client.options(
+        "/api/v1/chat",
+        headers={
+            "Origin": "http://localhost:5500",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert (
+        response.headers["access-control-allow-origin"]
+        == "http://localhost:5500"
+    )
+
+
+def test_cors_rejects_unconfigured_origin():
+    response = client.options(
+        "/api/v1/chat",
+        headers={
+            "Origin": "http://example.com",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert (
+        "access-control-allow-origin"
+        not in response.headers
+    )
 
 

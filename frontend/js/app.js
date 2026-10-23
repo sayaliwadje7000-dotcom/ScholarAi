@@ -1,9 +1,7 @@
 /* ==========================================================
-   ScholarAI — Phase 3.4–3.9.1
-   Navigation, accessible cards, assistant preview,
-   persistent conversation history, conversation management,
-   and toast notifications.
-   Real AI answers will be connected in Phase 5.
+   ScholarAI — Phase 4.3
+   Navigation, conversation management, API integration,
+   message rendering, and toast notifications.
    ========================================================== */
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -24,7 +22,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const overviewHTML = dashboard.innerHTML;
 
     // ==========================================================
-    // PHASE 3.9.1 — TOAST NOTIFICATIONS
+    // TOAST NOTIFICATIONS
     // ==========================================================
 
     function showToast(message, type = "info", duration = 3000) {
@@ -146,6 +144,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     let conversations = [];
     let activeConversationId = null;
+    let chatRequestInProgress = false;
 
     function makeId() {
         return `conversation-${Date.now()}-${Math.random()
@@ -210,9 +209,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 Number(conversation.updatedAt) || Date.now();
         });
 
-        conversations.sort(
-            (a, b) => b.updatedAt - a.updatedAt
-        );
+        conversations.sort((a, b) => b.updatedAt - a.updatedAt);
 
         activeConversationId = conversations[0]?.id || null;
     }
@@ -304,7 +301,6 @@ document.addEventListener("DOMContentLoaded", () => {
                     </button>
 
                     <div class="conversation-actions">
-
                         <button
                             type="button"
                             class="conversation-action ${conversation.pinned ? "is-pinned" : ""}"
@@ -330,17 +326,13 @@ document.addEventListener("DOMContentLoaded", () => {
                             aria-label="Delete ${escapeHTML(conversation.title)}"
                             title="Delete conversation"
                         >×</button>
-
                     </div>
                 </div>
             `;
         }
 
         pinnedList.innerHTML = pinned.map(itemMarkup).join("");
-
-        conversationList.innerHTML = recent
-            .map(itemMarkup)
-            .join("");
+        conversationList.innerHTML = recent.map(itemMarkup).join("");
 
         if (pinnedGroup) {
             pinnedGroup.hidden = pinned.length === 0;
@@ -355,25 +347,17 @@ document.addEventListener("DOMContentLoaded", () => {
     // CHAT MESSAGE DISPLAY
     // ==========================================================
 
-        // ==========================================================
-    // CHAT MESSAGE DISPLAY
-    // ==========================================================
-
     function messageMarkup(conversation) {
         const messages = conversation?.messages || [];
 
         if (!messages.length) {
             return `
                 <div class="chat-empty-state">
-                    <div class="chat-empty-mark" aria-hidden="true">
-                        S
-                    </div>
+                    <div class="chat-empty-mark" aria-hidden="true">S</div>
 
                     <h2>What would you like to learn?</h2>
 
-                    <p>
-                        Ask a study question to start a conversation.
-                    </p>
+                    <p>Ask a study question to start a conversation.</p>
 
                     <div class="chat-suggestions">
                         <button
@@ -419,14 +403,15 @@ document.addEventListener("DOMContentLoaded", () => {
                         ${message.role === "user" ? "You" : "ScholarAI"}
                     </p>
 
-                    <div class="chat-message-text">
-                        ${escapeHTML(message.text).replace(/\n/g, "<br>")}
-                    </div>
+                    <div class="chat-message-text">${
+                        escapeHTML(message.text).replace(/\n/g, "<br>")
+                    }</div>
                 </div>
             </article>
         `).join("");
     }
-        // ==========================================================
+
+    // ==========================================================
     // AI ASSISTANT PAGE
     // ==========================================================
 
@@ -477,10 +462,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         ${messageMarkup(conversation)}
                     </div>
 
-                    <form
-                        class="assistant-composer"
-                        id="assistant-chat-form"
-                    >
+                    <form class="assistant-composer" id="assistant-chat-form">
                         <label
                             class="visually-hidden"
                             for="assistant-chat-input"
@@ -537,10 +519,7 @@ document.addEventListener("DOMContentLoaded", () => {
         dashboard.innerHTML = `
             <section class="navigation-page">
                 <div class="navigation-page-heading">
-                    <p class="navigation-page-eyebrow">
-                        SCHOLARAI WORKSPACE
-                    </p>
-
+                    <p class="navigation-page-eyebrow">SCHOLARAI WORKSPACE</p>
                     <h1>${escapeHTML(name)}</h1>
 
                     <p class="navigation-page-description">
@@ -552,18 +531,14 @@ document.addEventListener("DOMContentLoaded", () => {
                     <div
                         class="navigation-placeholder-icon"
                         aria-hidden="true"
-                    >
-                        S
-                    </div>
+                    >S</div>
 
                     <h2>${escapeHTML(name)}</h2>
 
-                    <p>
-                        ${escapeHTML(
-                            page.message ||
-                            "This feature will be implemented in a later roadmap phase."
-                        )}
-                    </p>
+                    <p>${escapeHTML(
+                        page.message ||
+                        "This feature will be implemented in a later roadmap phase."
+                    )}</p>
 
                     <span class="navigation-status">
                         Feature development in progress
@@ -592,9 +567,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         navItems.forEach(item => {
             const label = item.querySelector("span:nth-child(2)");
-
-            const active =
-                label && label.textContent.trim() === name;
+            const active = label && label.textContent.trim() === name;
 
             item.classList.toggle("active", Boolean(active));
 
@@ -612,17 +585,10 @@ document.addEventListener("DOMContentLoaded", () => {
             const url = new URL(window.location.href);
             url.hash = encodeURIComponent(name);
 
-            history.pushState(
-                { page: name },
-                "",
-                url
-            );
+            history.pushState({ page: name }, "", url);
         }
 
-        window.scrollTo({
-            top: 0,
-            behavior: "smooth"
-        });
+        window.scrollTo({ top: 0, behavior: "smooth" });
     }
 
     // ==========================================================
@@ -663,116 +629,208 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         }
 
-        conversations.sort(
-            (a, b) => b.updatedAt - a.updatedAt
-        );
+        conversations.sort((a, b) => b.updatedAt - a.updatedAt);
 
         saveConversations();
         renderConversationHistory();
     }
 
     // ==========================================================
-    // SEND CHAT MESSAGE
+    // SEND CHAT MESSAGE — PHASE 4.3
     // ==========================================================
 
-    function sendChat(form) {
-    const input = form.querySelector("#assistant-chat-input");
-    const sendButton = form.querySelector(
-        ".composer-send-button"
-    );
-
-    const text = input?.value.trim();
-
-    if (!text) {
-        showToast(
-            "Please enter a message before sending.",
-            "warning"
-        );
-
-        input?.focus();
-        return;
-    }
-
-    if (sendButton?.disabled) {
-        return;
-    }
-
-    addMessage("user", text);
-
-    renderAssistant();
-
-    showToast(
-        "Message submitted.",
-        "success",
-        1800
-    );
-
-    const currentForm = document.getElementById(
-        "assistant-chat-form"
-    );
-
-    const currentInput = document.getElementById(
-        "assistant-chat-input"
-    );
-
-    const currentSendButton = currentForm?.querySelector(
-        ".composer-send-button"
-    );
-
-    if (currentInput) {
-        currentInput.disabled = true;
-    }
-
-    if (currentSendButton) {
-        currentSendButton.disabled = true;
-    }
-
-    const messageList = document.getElementById(
-        "chat-messages"
-    );
-
-    if (messageList) {
-        const loading = document.createElement("div");
-
-        loading.className = "chat-loading";
-        loading.id = "chat-loading";
-        loading.setAttribute("role", "status");
-
-        loading.innerHTML = `
-            <span>ScholarAI is preparing a response</span>
-
-            <span class="chat-loading-dots" aria-hidden="true">
-                <span></span>
-                <span></span>
-                <span></span>
-            </span>
-        `;
-
-        messageList.appendChild(loading);
-        messageList.scrollTop = messageList.scrollHeight;
-    }
-
-    window.setTimeout(() => {
-        const loading = document.getElementById("chat-loading");
-
-        if (loading) {
-            loading.remove();
+    async function sendChat(form) {
+        if (chatRequestInProgress) {
+            return;
         }
 
-        addMessage(
-            "assistant",
-            "Your message is saved in this preview conversation. Live AI answer generation will be connected when the backend and LLM are integrated in Phase 5."
-        );
+        const input = form.querySelector("#assistant-chat-input");
+        const text = input?.value.trim();
 
-        renderAssistant();
+        if (!text) {
+            showToast("Please enter a message before sending.", "warning");
+            input?.focus();
+            return;
+        }
 
-        showToast(
-            "Response ready.",
-            "success",
-            1800
-        );
-    }, 900);
-}
+        if (text.length > 5000) {
+            showToast(
+                "Your message must contain no more than 5000 characters.",
+                "warning"
+            );
+            input?.focus();
+            return;
+        }
+
+        if (!window.ScholarAIAPI) {
+            showToast(
+                "The ScholarAI API client failed to load. Refresh the page and try again.",
+                "error"
+            );
+            return;
+        }
+
+        const conversation = getActiveConversation();
+
+        if (!conversation) {
+            showToast(
+                "Unable to find the active conversation. Please start a new conversation.",
+                "error"
+            );
+            return;
+        }
+
+        const conversationId = conversation.id;
+        chatRequestInProgress = true;
+
+        try {
+            // Save the user's message exactly once.
+            addMessage("user", text);
+
+            // Render the question before requesting the backend.
+            renderAssistant();
+
+            const currentInput = document.getElementById(
+                "assistant-chat-input"
+            );
+
+            const sendButton = document.querySelector(
+                "#assistant-chat-form .composer-send-button"
+            );
+
+            const messageList = document.getElementById("chat-messages");
+
+            if (currentInput) {
+                currentInput.disabled = true;
+            }
+
+            if (sendButton) {
+                sendButton.disabled = true;
+                sendButton.setAttribute("aria-busy", "true");
+            }
+
+            const loading = document.createElement("div");
+            loading.className = "chat-loading";
+            loading.id = "chat-loading";
+            loading.setAttribute("role", "status");
+            loading.setAttribute("aria-live", "polite");
+
+            loading.innerHTML = `
+                <span>ScholarAI is preparing a response</span>
+                <span class="chat-loading-dots" aria-hidden="true">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </span>
+            `;
+
+            messageList?.appendChild(loading);
+
+            if (messageList) {
+                messageList.scrollTop = messageList.scrollHeight;
+            }
+
+            // Send the request to FastAPI.
+            const response = await window.ScholarAIAPI.sendChatMessage(
+                text,
+                conversationId
+            );
+
+            // Avoid displaying a response in another conversation.
+            const stillActive = getActiveConversation();
+
+            if (!stillActive || stillActive.id !== conversationId) {
+                return;
+            }
+
+            if (
+                typeof response?.answer !== "string" ||
+                !response.answer.trim()
+            ) {
+                throw new Error("The backend returned an empty answer.");
+            }
+
+            // Save the assistant's answer.
+            addMessage("assistant", response.answer);
+
+            // Render the question and answer in the conversation.
+            renderAssistant();
+
+            const chatMessages = document.getElementById("chat-messages");
+
+            
+
+console.log("Answer saved:", response.answer);
+console.log("Chat container found:", Boolean(chatMessages));
+console.log(
+    "Chat container HTML:",
+    chatMessages?.innerHTML
+);
+
+console.log(
+    "All visible assistant answers:",
+    [...document.querySelectorAll(".assistant-message")]
+        .map(message => message.innerText)
+);
+
+console.log(
+    "All chat message elements:",
+    document.querySelectorAll("#chat-messages .chat-message").length
+);
+console.log(
+    "Assistant message count:",
+    chatMessages?.querySelectorAll(".assistant-message").length
+);
+console.log(
+    "User message count:",
+    chatMessages?.querySelectorAll(".user-message").length
+);
+            const updatedMessageList =
+                document.getElementById("chat-messages");
+
+            if (updatedMessageList) {
+                updatedMessageList.scrollTop =
+                    updatedMessageList.scrollHeight;
+            }
+
+            showToast(
+                "Response received from the backend.",
+                "success",
+                1800
+            );
+
+        } catch (error) {
+            console.error("ScholarAI chat request failed:", error);
+
+            showToast(
+                error.message || "Something went wrong. Please try again.",
+                "error",
+                5000
+            );
+
+        } finally {
+            chatRequestInProgress = false;
+
+            document.getElementById("chat-loading")?.remove();
+
+            const currentInput = document.getElementById(
+                "assistant-chat-input"
+            );
+
+            const sendButton = document.querySelector(
+                "#assistant-chat-form .composer-send-button"
+            );
+
+            if (currentInput) {
+                currentInput.disabled = false;
+            }
+
+            if (sendButton) {
+                sendButton.disabled = false;
+                sendButton.removeAttribute("aria-busy");
+            }
+        }
+    }
 
     // ==========================================================
     // RENAME CONVERSATION
@@ -808,10 +866,7 @@ document.addEventListener("DOMContentLoaded", () => {
             renderAssistant();
         }
 
-        showToast(
-            "Conversation renamed successfully.",
-            "success"
-        );
+        showToast("Conversation renamed successfully.", "success");
     }
 
     // ==========================================================
@@ -832,8 +887,7 @@ document.addEventListener("DOMContentLoaded", () => {
         );
 
         if (activeConversationId === conversation.id) {
-            activeConversationId =
-                conversations[0]?.id || null;
+            activeConversationId = conversations[0]?.id || null;
         }
 
         saveConversations();
@@ -848,10 +902,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         }
 
-        showToast(
-            "Conversation deleted successfully.",
-            "success"
-        );
+        showToast("Conversation deleted successfully.", "success");
     }
 
     // ==========================================================
@@ -883,13 +934,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
         return null;
     }
-        // ==========================================================
+
+    // ==========================================================
     // CLICK EVENTS
     // ==========================================================
 
     document.addEventListener("click", event => {
-
-        // Sidebar navigation
         const nav = event.target.closest(
             ".sidebar-nav .nav-item"
         );
@@ -907,7 +957,6 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
-        // Dashboard cards
         const card = event.target.closest(
             ".action-card, .discovery-card"
         );
@@ -922,7 +971,6 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
-        // Conversation history actions
         const historyAction = event.target.closest(
             "[data-conversation-action]"
         );
@@ -944,12 +992,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
             }
 
-            const action =
-                historyAction.dataset.conversationAction;
+            const action = historyAction.dataset.conversationAction;
 
             if (action === "open") {
                 activeConversationId = conversation.id;
-
                 renderConversationHistory();
                 navigate("AI Assistant");
 
@@ -977,22 +1023,13 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
-        // Create a new conversation
         if (event.target.closest("#new-conversation")) {
             createConversation(true);
-
-            showToast(
-                "New conversation created.",
-                "success"
-            );
-
+            showToast("New conversation created.", "success");
             return;
         }
 
-        // Rename the active conversation
-        if (
-            event.target.closest("#rename-active-conversation")
-        ) {
+        if (event.target.closest("#rename-active-conversation")) {
             const conversation = getActiveConversation();
 
             if (conversation) {
@@ -1002,10 +1039,7 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
-        // Suggestion chips
-        const suggestion = event.target.closest(
-            ".suggestion-chip"
-        );
+        const suggestion = event.target.closest(".suggestion-chip");
 
         if (suggestion) {
             const input = document.getElementById(
@@ -1020,7 +1054,6 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
-        // Clear conversation messages
         if (event.target.closest("#clear-chat")) {
             const conversation = getActiveConversation();
 
@@ -1032,11 +1065,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
             }
 
-            if (
-                !window.confirm(
-                    "Clear all messages in this conversation?"
-                )
-            ) {
+            if (!window.confirm("Clear all messages in this conversation?")) {
                 return;
             }
 
@@ -1048,10 +1077,7 @@ document.addEventListener("DOMContentLoaded", () => {
             renderConversationHistory();
             renderAssistant();
 
-            showToast(
-                "Conversation messages cleared.",
-                "success"
-            );
+            showToast("Conversation messages cleared.", "success");
         }
     });
 
@@ -1060,10 +1086,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // ==========================================================
 
     document.addEventListener("keydown", event => {
-        if (
-            event.key !== "Enter" &&
-            event.key !== " "
-        ) {
+        if (event.key !== "Enter" && event.key !== " ") {
             return;
         }
 
@@ -1093,15 +1116,12 @@ document.addEventListener("DOMContentLoaded", () => {
     // ==========================================================
 
     document.addEventListener("submit", event => {
-
-        // AI Assistant form
         if (event.target.id === "assistant-chat-form") {
             event.preventDefault();
-            sendChat(event.target);
+            void sendChat(event.target);
             return;
         }
 
-        // Dashboard search ribbon
         if (event.target.matches(".chat-search")) {
             event.preventDefault();
 
@@ -1116,38 +1136,45 @@ document.addEventListener("DOMContentLoaded", () => {
                     "Please enter a question in the search bar.",
                     "warning"
                 );
+                input?.focus();
+                return;
+            }
 
+            if (question.length > 5000) {
+                showToast(
+                    "Your question must contain no more than 5000 characters.",
+                    "warning"
+                );
                 input?.focus();
                 return;
             }
 
             let conversation = getActiveConversation();
 
-            if (
-                !conversation ||
-                conversation.messages.length > 0
-            ) {
+            if (!conversation || conversation.messages.length > 0) {
                 conversation = createConversation(false);
             }
 
-            addMessage("user", question);
-
             navigate("AI Assistant");
 
-            showToast(
-                "Your question has been submitted.",
-                "success",
-                1800
+            const assistantInput = document.getElementById(
+                "assistant-chat-input"
             );
 
-            window.setTimeout(() => {
-                addMessage(
-                    "assistant",
-                    "Your question is saved in this preview. Live AI answers will be enabled in Phase 5."
-                );
+            const assistantForm = document.getElementById(
+                "assistant-chat-form"
+            );
 
-                renderAssistant();
-            }, 450);
+            if (!assistantInput || !assistantForm) {
+                showToast(
+                    "Unable to open the assistant. Please try again.",
+                    "error"
+                );
+                return;
+            }
+
+            assistantInput.value = question;
+            assistantForm.requestSubmit();
         }
     });
 
@@ -1159,10 +1186,16 @@ document.addEventListener("DOMContentLoaded", () => {
         if (
             event.target.id === "assistant-chat-input" &&
             event.key === "Enter" &&
-            !event.shiftKey
+            !event.shiftKey &&
+            !event.isComposing
         ) {
             event.preventDefault();
-            event.target.form.requestSubmit();
+
+            const form = event.target.form;
+
+            if (form) {
+                form.requestSubmit();
+            }
         }
     });
 
@@ -1175,21 +1208,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
         try {
             hashName = window.location.hash
-                ? decodeURIComponent(
-                    window.location.hash.slice(1)
-                )
+                ? decodeURIComponent(window.location.hash.slice(1))
                 : "Overview";
-
         } catch (error) {
             hashName = "Overview";
         }
 
         const name = event.state?.page || hashName;
 
-        navigate(
-            pages[name] ? name : "Overview",
-            false
-        );
+        navigate(pages[name] ? name : "Overview", false);
     });
 
     // ==========================================================
@@ -1203,23 +1230,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
     try {
         initialHash = window.location.hash
-            ? decodeURIComponent(
-                window.location.hash.slice(1)
-            )
+            ? decodeURIComponent(window.location.hash.slice(1))
             : "Overview";
-
     } catch (error) {
         initialHash = "Overview";
     }
 
     const initialPage = history.state?.page || initialHash;
 
-    navigate(
-        pages[initialPage] ? initialPage : "Overview",
-        false
-    );
+    navigate(pages[initialPage] ? initialPage : "Overview", false);
 
-    console.log("ScholarAI Phase 3.4–3.9.1 initialized.");
+    console.log("ScholarAI Phase 4.3 initialized.");
 
     // ==========================================================
     // NOTIFICATION TEST HELPER
@@ -1231,5 +1252,4 @@ document.addEventListener("DOMContentLoaded", () => {
             "success"
         );
     };
-
 });

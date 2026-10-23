@@ -1844,3 +1844,73 @@ select:focus-visible,
         animation: none;
     }
 }
+/* ==========================================================
+   Phase 4.3 — Backend request states
+   ========================================================== */
+
+.chat-loading {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    align-self: flex-start;
+    max-width: 100%;
+    padding: 12px 15px;
+    color: #696762;
+    background: #FAF9F6;
+    border: 1px solid #E0DDD6;
+    border-radius: 12px;
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.chat-loading-dots {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.chat-loading-dots span {
+    width: 5px;
+    height: 5px;
+    background: #696762;
+    border-radius: 50%;
+    animation: scholarai-loading-pulse 1s infinite ease-in-out;
+}
+
+.chat-loading-dots span:nth-child(2) {
+    animation-delay: 0.15s;
+}
+
+.chat-loading-dots span:nth-child(3) {
+    animation-delay: 0.3s;
+}
+
+@keyframes scholarai-loading-pulse {
+    0%,
+    60%,
+    100% {
+        opacity: 0.35;
+        transform: translateY(0);
+    }
+
+    30% {
+        opacity: 1;
+        transform: translateY(-3px);
+    }
+}
+
+.composer-send-button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+#assistant-chat-input:disabled {
+    opacity: 0.7;
+    cursor: wait;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .chat-loading-dots span {
+        animation: none;
+    }
+}

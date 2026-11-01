@@ -23,3 +23,6 @@ htmlcov/
 Thumbs.db
 
 .env
+# Local development backups
+*.phase3-backup
+*.phase5-backup

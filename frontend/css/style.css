@@ -2028,3 +2028,183 @@ select:focus-visible,
     outline: 2px solid #801437;
     outline-offset: 3px;
 }
+/* ==========================================================
+   SCHOLARAI — ACADEMIC RESPONSE RENDERING
+   ========================================================== */
+
+/* Markdown headings */
+
+.chat-message-text h1,
+.chat-message-text h2,
+.chat-message-text h3,
+.chat-message-text h4,
+.chat-message-text h5,
+.chat-message-text h6 {
+    margin: 1.15em 0 0.45em;
+    color: #211f1d;
+    font-weight: 750;
+    line-height: 1.35;
+    letter-spacing: -0.02em;
+}
+
+.chat-message-text h1 {
+    font-size: 1.55rem;
+}
+
+.chat-message-text h2 {
+    font-size: 1.3rem;
+}
+
+.chat-message-text h3 {
+    font-size: 1.12rem;
+}
+
+.chat-message-text h4 {
+    font-size: 1rem;
+}
+
+.chat-message-text h5 {
+    font-size: 0.94rem;
+}
+
+.chat-message-text h6 {
+    font-size: 0.88rem;
+}
+
+/* Paragraphs and lists */
+
+.chat-message-text p {
+    margin: 0 0 0.75em;
+}
+
+.chat-message-text ul,
+.chat-message-text ol {
+    margin: 0.45em 0 0.9em;
+    padding-left: 1.65rem;
+}
+
+.chat-message-text li {
+    margin: 0.25em 0;
+}
+
+.chat-markdown-divider {
+    height: 1px;
+    margin: 1.1rem 0;
+    border: 0;
+    background: #dedbd4;
+}
+
+/* Inline code */
+
+.chat-message-text code {
+    padding: 0.12em 0.35em;
+    color: #761638;
+    background: #ece8e3;
+    border: 1px solid #e2ddd5;
+    border-radius: 5px;
+    font-family: Consolas, "SFMono-Regular", Menlo, monospace;
+    font-size: 0.92em;
+}
+
+/* Code block */
+
+.chat-code-block {
+    margin: 1rem 0 1.15rem;
+    overflow: hidden;
+    background: #171416;
+    border: 1px solid #3b2931;
+    border-radius: 12px;
+    box-shadow: 0 5px 18px rgba(23, 20, 22, 0.09);
+}
+
+.chat-code-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 13px;
+    color: #e8dfe3;
+    background: #261820;
+    border-bottom: 1px solid #49313c;
+    font-size: 11px;
+    font-weight: 650;
+    text-transform: lowercase;
+}
+
+.copy-code-button {
+    padding: 5px 9px;
+    color: #f8eef2;
+    background: #542238;
+    border: 1px solid #78415a;
+    border-radius: 6px;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.copy-code-button:hover,
+.copy-code-button.is-copied {
+    background: #7b2949;
+}
+
+.chat-message-text .chat-code-block pre {
+    max-width: 100%;
+    margin: 0;
+    padding: 16px;
+    overflow-x: auto;
+    color: #f5edf0;
+    background: transparent;
+    font-family: Consolas, "SFMono-Regular", Menlo, monospace;
+    font-size: 12.5px;
+    line-height: 1.7;
+    tab-size: 4;
+    white-space: pre;
+}
+
+.chat-message-text .chat-code-block pre code {
+    padding: 0;
+    color: inherit;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    font: inherit;
+}
+
+/* Tables */
+
+.chat-message-text .chat-table-wrapper {
+    max-width: 100%;
+    margin: 0.9rem 0 1.1rem;
+    overflow-x: auto;
+    border-radius: 8px;
+}
+
+.chat-message-text .chat-table-wrapper table {
+    min-width: 520px;
+    width: 100%;
+    border-collapse: collapse;
+}
+
+/* Mathematical equations */
+
+.chat-message-text mjx-container[display="true"] {
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0.35rem 0;
+}
+
+/* Responsive styling */
+
+@media (max-width: 600px) {
+    .chat-message-text h1 {
+        font-size: 1.35rem;
+    }
+
+    .chat-message-text h2 {
+        font-size: 1.16rem;
+    }
+
+    .chat-message-text .chat-code-block pre {
+        font-size: 11.5px;
+    }
+}

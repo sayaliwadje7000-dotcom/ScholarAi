@@ -182,8 +182,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function getCells(line) {
-        return line
-            .trim()
+        return line.trim()
             .replace(/^\|/, "")
             .replace(/\|$/, "")
             .split("|")
@@ -192,6 +191,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     let inCodeBlock = false;
     let codeLines = [];
+    let codeLanguage = "text";
     let listType = null;
     let paragraph = [];
 
@@ -204,11 +204,34 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function flushParagraph() {
         if (paragraph.length) {
-            output.push(
-                `<p>${inlineMarkdown(paragraph.join(" "))}</p>`
-            );
+            output.push(`<p>${inlineMarkdown(paragraph.join(" "))}</p>`);
             paragraph = [];
         }
+    }
+
+    function renderCodeBlock() {
+        const language = /^[a-z0-9_-]{1,24}$/i.test(codeLanguage)
+            ? codeLanguage.toLowerCase()
+            : "text";
+
+        output.push(`
+            <div class="chat-code-block">
+                <div class="chat-code-header">
+                    <span>${language}</span>
+                    <button
+                        type="button"
+                        class="copy-code-button"
+                        data-copy-code
+                    >
+                        Copy code
+                    </button>
+                </div>
+                <pre><code class="language-${language}">${codeLines.join("\n")}</code></pre>
+            </div>
+        `);
+
+        codeLines = [];
+        codeLanguage = "text";
     }
 
     function renderTable(headerLine, rows) {
@@ -244,18 +267,18 @@ document.addEventListener("DOMContentLoaded", () => {
         const line = lines[i];
         const trimmed = line.trim();
 
-        if (trimmed.startsWith("```")) {
+        const fence = trimmed.match(/^```([a-zA-Z0-9_-]*)\s*$/);
+
+        if (fence) {
             flushParagraph();
             closeList();
 
             if (inCodeBlock) {
-                output.push(
-                    `<pre><code>${codeLines.join("\n")}</code></pre>`
-                );
-                codeLines = [];
+                renderCodeBlock();
                 inCodeBlock = false;
             } else {
                 inCodeBlock = true;
+                codeLanguage = fence[1] || "text";
             }
 
             continue;
@@ -276,6 +299,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const headerLine = line;
             const rows = [];
+
             i += 2;
 
             while (i < lines.length && isTableRow(lines[i])) {
@@ -284,17 +308,24 @@ document.addEventListener("DOMContentLoaded", () => {
             }
 
             i--;
+
             renderTable(headerLine, rows);
             continue;
         }
 
-        if (!trimmed) {
+        if (!trimmed || /^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
             flushParagraph();
             closeList();
+
+            if (trimmed) {
+                output.push('<hr class="chat-markdown-divider">');
+            }
+
             continue;
         }
 
-        const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+        // Support all six Markdown heading levels.
+        const heading = trimmed.match(/^(#{1,6})\s+(.+)$/);
 
         if (heading) {
             flushParagraph();
@@ -335,13 +366,15 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     if (inCodeBlock) {
-        output.push(`<pre><code>${codeLines.join("\n")}</code></pre>`);
+        renderCodeBlock();
     }
 
     flushParagraph();
     closeList();
 
     return output.join("");
+    
+
 }
 
     function loadConversations() {
@@ -690,6 +723,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
         if (list) {
             list.scrollTop = list.scrollHeight;
+             requestAnimationFrame(() => {
+        typesetMath(list);
+    });
         }
     }
 
@@ -941,6 +977,9 @@ document.addEventListener("DOMContentLoaded", () => {
             renderAssistant();
 
             const chatMessages = document.getElementById("chat-messages");
+            if (chatMessages) {
+    typesetMath(chatMessages);
+}
 
             
 
@@ -1118,8 +1157,11 @@ console.log(
 
         return null;
     }
+
+
+
 // ==========================================================
-// COPY CHAT MESSAGE
+// COPY INDIVIDUAL CHAT MESSAGE
 // ==========================================================
 
 async function copyMessage(copyButton) {
@@ -1140,16 +1182,16 @@ async function copyMessage(copyButton) {
         return;
     }
 
-    const textToCopy = message.text;
-
     try {
         if (navigator.clipboard && window.isSecureContext) {
-            await navigator.clipboard.writeText(textToCopy);
+            await navigator.clipboard.writeText(message.text);
         } else {
-            const temporaryInput = document.createElement("textarea");
+            const temporaryInput =
+                document.createElement("textarea");
 
-            temporaryInput.value = textToCopy;
+            temporaryInput.value = message.text;
             temporaryInput.setAttribute("readonly", "");
+
             temporaryInput.style.position = "fixed";
             temporaryInput.style.left = "-9999px";
 
@@ -1171,7 +1213,11 @@ async function copyMessage(copyButton) {
 
         copyButton.classList.add("is-copied");
 
-        showToast("Message copied to clipboard.", "success", 1800);
+        showToast(
+            "Message copied successfully.",
+            "success",
+            1800
+        );
 
         window.setTimeout(() => {
             if (copyButton.isConnected) {
@@ -1181,7 +1227,10 @@ async function copyMessage(copyButton) {
         }, 1600);
 
     } catch (error) {
-        console.error("ScholarAI: Could not copy message.", error);
+        console.error(
+            "ScholarAI: Could not copy message.",
+            error
+        );
 
         showToast(
             "Could not copy the message. Please try again.",
@@ -1189,329 +1238,554 @@ async function copyMessage(copyButton) {
         );
     }
 }
-    // ==========================================================
-    // CLICK EVENTS
-    // ==========================================================
 
-    document.addEventListener("click", async event => {
+
+// ==========================================================
+// CLICK EVENTS
+// ==========================================================
+
+document.addEventListener("click", async event => {
+
     const copyButton = event.target.closest(
         "[data-copy-message-index]"
     );
+        // COPY CODE BLOCK
+    const codeCopyButton = event.target.closest("[data-copy-code]");
+
+    if (codeCopyButton) {
+        const codeBlock = codeCopyButton.closest(".chat-code-block");
+        const codeElement = codeBlock?.querySelector("pre code");
+
+        if (!codeElement) {
+            showToast("Code block not found.", "error");
+            return;
+        }
+
+        const codeText = codeElement.textContent;
+
+        try {
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(codeText);
+            } else {
+                const textarea = document.createElement("textarea");
+                textarea.value = codeText;
+                textarea.style.position = "fixed";
+                textarea.style.left = "-9999px";
+
+                document.body.appendChild(textarea);
+                textarea.select();
+
+                const copied = document.execCommand("copy");
+                textarea.remove();
+
+                if (!copied) {
+                    throw new Error("Copy failed.");
+                }
+            }
+
+            const originalText = codeCopyButton.textContent;
+
+            codeCopyButton.textContent = "Copied!";
+
+            showToast("Code copied successfully.", "success");
+
+            setTimeout(() => {
+                if (codeCopyButton.isConnected) {
+                    codeCopyButton.textContent = originalText;
+                }
+            }, 1600);
+
+        } catch (error) {
+            console.error("Code copying failed:", error);
+            showToast("Unable to copy code.", "error");
+        }
+
+        return;
+    }
 
     if (copyButton) {
         await copyMessage(copyButton);
         return;
     }
-        const nav = event.target.closest(
-            ".sidebar-nav .nav-item"
+
+    const nav = event.target.closest(
+        ".sidebar-nav .nav-item"
+    );
+
+    if (nav) {
+        event.preventDefault();
+
+        const label = nav.querySelector("span:nth-child(2)");
+        const pageName = label?.textContent.trim();
+
+        if (pageName && pages[pageName]) {
+            navigate(pageName);
+        }
+
+        return;
+    }
+
+    const card = event.target.closest(
+        ".action-card, .discovery-card"
+    );
+
+    if (card) {
+        const destination = getCardDestination(card);
+
+        if (destination) {
+            navigate(destination);
+        }
+
+        return;
+    }
+
+    const historyAction = event.target.closest(
+        "[data-conversation-action]"
+    );
+
+    if (historyAction) {
+        const row = historyAction.closest(
+            "[data-conversation-id]"
         );
 
-        if (nav) {
-            event.preventDefault();
-
-            const label = nav.querySelector("span:nth-child(2)");
-            const pageName = label?.textContent.trim();
-
-            if (pageName && pages[pageName]) {
-                navigate(pageName);
-            }
-
-            return;
-        }
-
-        const card = event.target.closest(
-            ".action-card, .discovery-card"
+        const conversation = conversations.find(
+            item => item.id === row?.dataset.conversationId
         );
 
-        if (card) {
-            const destination = getCardDestination(card);
-
-            if (destination) {
-                navigate(destination);
-            }
-
-            return;
-        }
-
-        const historyAction = event.target.closest(
-            "[data-conversation-action]"
-        );
-
-        if (historyAction) {
-            const row = historyAction.closest(
-                "[data-conversation-id]"
+        if (!conversation) {
+            showToast(
+                "This conversation could not be found.",
+                "error"
             );
-
-            const conversation = conversations.find(
-                item => item.id === row?.dataset.conversationId
-            );
-
-            if (!conversation) {
-                showToast(
-                    "This conversation could not be found.",
-                    "error"
-                );
-                return;
-            }
-
-            const action = historyAction.dataset.conversationAction;
-
-            if (action === "open") {
-                activeConversationId = conversation.id;
-                renderConversationHistory();
-                navigate("AI Assistant");
-
-            } else if (action === "pin") {
-                conversation.pinned = !conversation.pinned;
-                conversation.updatedAt = Date.now();
-
-                saveConversations();
-                renderConversationHistory();
-
-                showToast(
-                    conversation.pinned
-                        ? "Conversation pinned."
-                        : "Conversation unpinned.",
-                    "success"
-                );
-
-            } else if (action === "rename") {
-                renameConversation(conversation);
-
-            } else if (action === "delete") {
-                deleteConversation(conversation);
-            }
-
             return;
         }
 
-        if (event.target.closest("#new-conversation")) {
-            createConversation(true);
-            showToast("New conversation created.", "success");
-            return;
-        }
+        const action =
+            historyAction.dataset.conversationAction;
 
-        if (event.target.closest("#rename-active-conversation")) {
-            const conversation = getActiveConversation();
+        if (action === "open") {
+            activeConversationId = conversation.id;
+            renderConversationHistory();
+            navigate("AI Assistant");
 
-            if (conversation) {
-                renameConversation(conversation);
-            }
-
-            return;
-        }
-
-        const suggestion = event.target.closest(".suggestion-chip");
-
-        if (suggestion) {
-            const input = document.getElementById(
-                "assistant-chat-input"
-            );
-
-            if (input) {
-                input.value = suggestion.dataset.prompt || "";
-                input.focus();
-            }
-
-            return;
-        }
-
-        if (event.target.closest("#clear-chat")) {
-            const conversation = getActiveConversation();
-
-            if (!conversation) {
-                showToast(
-                    "There is no active conversation to clear.",
-                    "warning"
-                );
-                return;
-            }
-
-            if (!window.confirm("Clear all messages in this conversation?")) {
-                return;
-            }
-
-            conversation.messages = [];
-            conversation.title = "New conversation";
+        } else if (action === "pin") {
+            conversation.pinned = !conversation.pinned;
             conversation.updatedAt = Date.now();
 
             saveConversations();
             renderConversationHistory();
-            renderAssistant();
 
-            showToast("Conversation messages cleared.", "success");
-        }
-    });
-
-    // ==========================================================
-    // KEYBOARD ACCESSIBILITY FOR DASHBOARD CARDS
-    // ==========================================================
-
-    document.addEventListener("keydown", event => {
-        if (event.key !== "Enter" && event.key !== " ") {
-            return;
-        }
-
-        const card = event.target.closest(
-            ".action-card, .discovery-card"
-        );
-
-        if (!card) {
-            return;
-        }
-
-        if (
-            event.target !== card &&
-            event.target.closest(
-                "a, button, input, textarea, select"
-            )
-        ) {
-            return;
-        }
-
-        event.preventDefault();
-        card.click();
-    });
-
-    // ==========================================================
-    // FORM SUBMISSION
-    // ==========================================================
-
-    document.addEventListener("submit", event => {
-        if (event.target.id === "assistant-chat-form") {
-            event.preventDefault();
-            void sendChat(event.target);
-            return;
-        }
-
-        if (event.target.matches(".chat-search")) {
-            event.preventDefault();
-
-            const input = event.target.querySelector(
-                'input[name="q"]'
+            showToast(
+                conversation.pinned
+                    ? "Conversation pinned."
+                    : "Conversation unpinned.",
+                "success"
             );
 
-            const question = input?.value.trim();
+        } else if (action === "rename") {
+            renameConversation(conversation);
 
-            if (!question) {
-                showToast(
-                    "Please enter a question in the search bar.",
-                    "warning"
-                );
-                input?.focus();
-                return;
-            }
-
-            if (question.length > 5000) {
-                showToast(
-                    "Your question must contain no more than 5000 characters.",
-                    "warning"
-                );
-                input?.focus();
-                return;
-            }
-
-            let conversation = getActiveConversation();
-
-            if (!conversation || conversation.messages.length > 0) {
-                conversation = createConversation(false);
-            }
-
-            navigate("AI Assistant");
-
-            const assistantInput = document.getElementById(
-                "assistant-chat-input"
-            );
-
-            const assistantForm = document.getElementById(
-                "assistant-chat-form"
-            );
-
-            if (!assistantInput || !assistantForm) {
-                showToast(
-                    "Unable to open the assistant. Please try again.",
-                    "error"
-                );
-                return;
-            }
-
-            assistantInput.value = question;
-            assistantForm.requestSubmit();
-        }
-    });
-
-    // ==========================================================
-    // ENTER TO SEND; SHIFT+ENTER FOR A NEW LINE
-    // ==========================================================
-
-    document.addEventListener("keydown", event => {
-        if (
-            event.target.id === "assistant-chat-input" &&
-            event.key === "Enter" &&
-            !event.shiftKey &&
-            !event.isComposing
-        ) {
-            event.preventDefault();
-
-            const form = event.target.form;
-
-            if (form) {
-                form.requestSubmit();
-            }
-        }
-    });
-
-    // ==========================================================
-    // BROWSER BACK/FORWARD NAVIGATION
-    // ==========================================================
-
-    window.addEventListener("popstate", event => {
-        let hashName = "Overview";
-
-        try {
-            hashName = window.location.hash
-                ? decodeURIComponent(window.location.hash.slice(1))
-                : "Overview";
-        } catch (error) {
-            hashName = "Overview";
+        } else if (action === "delete") {
+            deleteConversation(conversation);
         }
 
-        const name = event.state?.page || hashName;
-
-        navigate(pages[name] ? name : "Overview", false);
-    });
-
-    // ==========================================================
-    // INITIALIZE APPLICATION
-    // ==========================================================
-
-    loadConversations();
-    renderConversationHistory();
-
-    let initialHash = "Overview";
-
-    try {
-        initialHash = window.location.hash
-            ? decodeURIComponent(window.location.hash.slice(1))
-            : "Overview";
-    } catch (error) {
-        initialHash = "Overview";
+        return;
     }
 
-    const initialPage = history.state?.page || initialHash;
+    if (event.target.closest("#new-conversation")) {
+        createConversation(true);
+        showToast("New conversation created.", "success");
+        return;
+    }
 
-    navigate(pages[initialPage] ? initialPage : "Overview", false);
+    if (event.target.closest("#rename-active-conversation")) {
+        const conversation = getActiveConversation();
 
-    console.log("ScholarAI Phase 4.3 initialized.");
+        if (conversation) {
+            renameConversation(conversation);
+        }
 
-    // ==========================================================
-    // NOTIFICATION TEST HELPER
-    // ==========================================================
+        return;
+    }
 
-    window.scholarAIToastTest = function () {
+    const suggestion = event.target.closest(".suggestion-chip");
+
+    if (suggestion) {
+        const input = document.getElementById(
+            "assistant-chat-input"
+        );
+
+        if (input) {
+            input.value = suggestion.dataset.prompt || "";
+            input.focus();
+        }
+
+        return;
+    }
+
+    if (event.target.closest("#clear-chat")) {
+        const conversation = getActiveConversation();
+
+        if (!conversation) {
+            showToast(
+                "There is no active conversation to clear.",
+                "warning"
+            );
+            return;
+        }
+
+        if (!window.confirm(
+            "Clear all messages in this conversation?"
+        )) {
+            return;
+        }
+
+        conversation.messages = [];
+        conversation.title = "New conversation";
+        conversation.updatedAt = Date.now();
+
+        saveConversations();
+        renderConversationHistory();
+        renderAssistant();
+
         showToast(
-            "ScholarAI notification system is working!",
+            "Conversation messages cleared.",
             "success"
         );
-    };
+    }
+});
+
+
+// ==========================================================
+// KEYBOARD ACCESSIBILITY FOR DASHBOARD CARDS
+// ==========================================================
+
+document.addEventListener("keydown", event => {
+
+    if (event.key !== "Enter" && event.key !== " ") {
+        return;
+    }
+
+    const card = event.target.closest(
+        ".action-card, .discovery-card"
+    );
+
+    if (!card) {
+        return;
+    }
+
+    if (
+        event.target !== card &&
+        event.target.closest(
+            "a, button, input, textarea, select"
+        )
+    ) {
+        return;
+    }
+
+    event.preventDefault();
+    card.click();
+});
+
+
+// ==========================================================
+// FORM SUBMISSION
+// ==========================================================
+
+document.addEventListener("submit", event => {
+
+    if (event.target.id === "assistant-chat-form") {
+        event.preventDefault();
+        void sendChat(event.target);
+        return;
+    }
+
+    if (event.target.matches(".chat-search")) {
+        event.preventDefault();
+
+        const input = event.target.querySelector(
+            'input[name="q"]'
+        );
+
+        const question = input?.value.trim();
+
+        if (!question) {
+            showToast(
+                "Please enter a question in the search bar.",
+                "warning"
+            );
+
+            input?.focus();
+            return;
+        }
+
+        if (question.length > 5000) {
+            showToast(
+                "Your question must contain no more than 5000 characters.",
+                "warning"
+            );
+
+            input?.focus();
+            return;
+        }
+
+        let conversation = getActiveConversation();
+
+        if (!conversation || conversation.messages.length > 0) {
+            conversation = createConversation(false);
+        }
+
+        navigate("AI Assistant");
+
+        const assistantInput = document.getElementById(
+            "assistant-chat-input"
+        );
+
+        const assistantForm = document.getElementById(
+            "assistant-chat-form"
+        );
+
+        if (!assistantInput || !assistantForm) {
+            showToast(
+                "Unable to open the assistant. Please try again.",
+                "error"
+            );
+            return;
+        }
+
+        assistantInput.value = question;
+        assistantForm.requestSubmit();
+    }
+});
+
+
+// ==========================================================
+// ENTER TO SEND; SHIFT+ENTER FOR A NEW LINE
+// ==========================================================
+
+document.addEventListener("keydown", event => {
+
+    if (
+        event.target.id === "assistant-chat-input" &&
+        event.key === "Enter" &&
+        !event.shiftKey &&
+        !event.isComposing
+    ) {
+        event.preventDefault();
+
+        const form = event.target.form;
+
+        if (form) {
+            form.requestSubmit();
+        }
+    }
+});
+
+
+// ==========================================================
+// BROWSER BACK/FORWARD NAVIGATION
+// ==========================================================
+
+window.addEventListener("popstate", event => {
+
+    let hashName = "Overview";
+
+    try {
+        hashName = window.location.hash
+            ? decodeURIComponent(window.location.hash.slice(1))
+            : "Overview";
+
+    } catch (error) {
+        hashName = "Overview";
+    }
+
+    const name = event.state?.page || hashName;
+
+    navigate(pages[name] ? name : "Overview", false);
+});
+
+
+// ==========================================================
+// INITIALIZE APPLICATION
+// ==========================================================
+
+loadConversations();
+renderConversationHistory();
+
+let initialHash = "Overview";
+
+try {
+    initialHash = window.location.hash
+        ? decodeURIComponent(window.location.hash.slice(1))
+        : "Overview";
+
+} catch (error) {
+    initialHash = "Overview";
+}
+
+const initialPage = history.state?.page || initialHash;
+
+navigate(
+    pages[initialPage] ? initialPage : "Overview",
+    false
+);
+
+console.log("ScholarAI Phase 4.3 initialized.");
+
+
+// ==========================================================
+// NOTIFICATION TEST HELPER
+// ==========================================================
+
+window.scholarAIToastTest = function () {
+    showToast(
+        "ScholarAI notification system is working!",
+        "success"
+    );
+};
+
+
+// ==========================================================
+// END OF DOMCONTENTLOADED
+// ==========================================================
+
+});
+
+
+// ==========================================================
+// MATHJAX RENDERING
+// ==========================================================
+
+let mathJaxPromise = null;
+
+function typesetMath(container) {
+
+    if (!container) return;
+
+    if (!mathJaxPromise) {
+
+        window.MathJax = {
+            tex: {
+                inlineMath: [["$", "$"], ["\\(", "\\)"]],
+                displayMath: [["$$", "$$"], ["\\[", "\\]"]],
+                processEscapes: true
+            },
+
+            options: {
+                skipHtmlTags: [
+                    "script",
+                    "noscript",
+                    "style",
+                    "textarea",
+                    "pre",
+                    "code"
+                ]
+            }
+        };
+
+        mathJaxPromise = new Promise((resolve, reject) => {
+
+            const script = document.createElement("script");
+
+            script.src =
+                "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js";
+
+            script.async = true;
+
+            script.onload = () => resolve(window.MathJax);
+
+            script.onerror = () => {
+                mathJaxPromise = null;
+                reject(new Error("MathJax failed to load."));
+            };
+
+            document.head.appendChild(script);
+        });
+    }
+
+    mathJaxPromise
+        .then(mathJax => {
+            return mathJax.typesetPromise([container]);
+        })
+        .catch(error => {
+            console.warn(
+                "MathJax rendering failed:",
+                error
+            );
+        });
+}
+// ==========================================================
+// SCHOLARAI — COPY PYTHON / CODE BLOCKS
+// ==========================================================
+
+document.addEventListener("click", async function (event) {
+
+    const button = event.target.closest("[data-copy-code]");
+
+    if (!button) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const codeBlock = button.closest(".chat-code-block");
+    const codeElement = codeBlock?.querySelector("pre code");
+
+    if (!codeElement) {
+        console.error("ScholarAI: Code element not found.");
+        return;
+    }
+
+    const code = codeElement.textContent;
+
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+
+            await navigator.clipboard.writeText(code);
+
+        } else {
+
+            const textarea = document.createElement("textarea");
+
+            textarea.value = code;
+            textarea.style.position = "fixed";
+            textarea.style.opacity = "0";
+
+            document.body.appendChild(textarea);
+
+            textarea.select();
+
+            const success = document.execCommand("copy");
+
+            textarea.remove();
+
+            if (!success) {
+                throw new Error("Clipboard copy failed.");
+            }
+        }
+
+        const originalText = button.textContent;
+
+        button.textContent = "Copied!";
+
+        button.classList.add("is-copied");
+
+        setTimeout(() => {
+            if (button.isConnected) {
+                button.textContent = originalText;
+                button.classList.remove("is-copied");
+            }
+        }, 1500);
+
+    } catch (error) {
+
+        console.error("ScholarAI code copy error:", error);
+
+        button.textContent = "Copy failed";
+
+        setTimeout(() => {
+            if (button.isConnected) {
+                button.textContent = "Copy code";
+            }
+        }, 1500);
+    }
 });

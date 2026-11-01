@@ -1,0 +1,286 @@
+{
+    "project": "ScholarAI",
+    "evaluation_type": "Academic Response Quality",
+    "model": "Gemini",
+    "timestamp": "2026-11-01T03:37:30.000042+00:00",
+    "total_questions": 6,
+    "successful_responses": 6,
+    "failed_responses": 0,
+    "overall_quality_score": 97.06,
+    "total_expected_elements": 34,
+    "total_covered_elements": 33,
+    "results": [
+        {
+            "id": 1,
+            "category": "Computer Science Fundamentals",
+            "question": "Explain the difference between RAM and ROM with their characteristics, advantages, disadvantages and applications.",
+            "expected_elements": [
+                "Volatility",
+                "Data storage",
+                "Read and write operations",
+                "Speed",
+                "Applications"
+            ],
+            "answer": "### 1. Definition and Introduction\n\n**RAM (Random Access Memory)** and **ROM (Read-Only Memory)** are two primary types of semiconductor memory utilized in computer systems. \n\n*   **RAM** is a volatile, read-write primary storage medium used to temporarily hold data and machine code currently actively used by the central processing unit (CPU).\n*   **ROM** is a non-volatile, primarily read-only memory medium used to store permanent instructions required to boot the system and initialize hardware.\n\n---\n\n### 2. Important Concepts and Characteristics\n\n| Characteristic | RAM (Random Access Memory) | ROM (Read-Only Memory) |\n| :--- | :--- | :--- |\n| **Volatibility** | Volatile (loses data when power is turned off). | Non-volatile (retains data without power). |\n| **Primary Function** | Holds active programs, OS kernel data, and working variables. | Stores permanent boot code (BIOS/UEFI) and firmware. |\n| **Access Capability** | Read and Write operations. | Primarily Read-Only (some types can be electrically erased/written). |\n| **Speed** | Extremely fast access times (nanoseconds). | Slower than RAM, though modern flash-based ROMs have improved. |\n| **Capacity** | Typically measured in Gigabytes (e.g., 8GB, 16GB, 32GB). | Typically measured in Megabytes (e.g., 4MB, 8MB, 32MB). |\n| **Cost per Bit** | Higher cost per gigabyte. | Lower cost per gigabyte. |\n\n---\n\n### 3. Working Mechanism\n\n#### RAM Working Mechanism\nRAM consists of millions of microscopic capacitors and transistors grouped into memory cells. \n*   **Dynamic RAM (DRAM):** Stores each bit of data in a separate capacitor within an integrated circuit. Because capacitors leak electrical charge, DRAM requires constant refreshing every few milliseconds to retain its data.\n*   **Static RAM (SRAM):** Uses flip-flop circuitry (typically 4 to 6 transistors) to store each bit. It does not require refreshing as long as power is supplied, making it faster but more expensive than DRAM.\n\n#### ROM Working Mechanism\nROM is structured using hardwired logic paths or trapped charges in floating-gate transistors.\n*   Data is permanently or semi-permanently written during manufacturing or via specialized programming devices. \n*   When a computer is powered on, the CPU fetches its very first instruction from a designated memory address mapped to the ROM chip (the reset vector), initiating the boot sequence.\n\n---\n\n### 4. Comparison of Advantages and Disadvantages\n\n#### RAM\n*   **Advantages:**\n    *   Enables fast read and write speeds, matching the high execution speed of modern processors.\n    *   Allows flexible memory allocation and deallocation for dynamic software applications.\n*   **Disadvantages:**\n    *   Volatile nature means all data is lost upon unexpected power loss.\n    *   Consumes continuous electrical power to maintain state (especially DRAM refresh cycles).\n\n#### ROM\n*   **Advantages:**\n    *   Non-volatile storage ensures critical boot code is never lost due to power interruption.\n    *   High reliability and immunity to accidental alteration by running programs.\n*   **Disadvantages:**\n    *   Extremely limited write capabilities (or none at all depending on the subtype).\n    *   Significantly slower read speeds compared to RAM.\n\n---\n\n### 5. Applications\n\n#### RAM Applications\n*   **Main System Memory:** Holding the operating system components, open applications, and user data currently processed by the CPU.\n*   **GPU VRAM (Video RAM):** Specialized high-speed RAM used by graphics processors to store image data, textures, and frame buffers.\n*   **CPU Cache:** High-speed SRAM integrated directly onto the CPU die to bridge the speed gap between the processor and main memory.\n\n#### ROM Applications\n*   **BIOS / UEFI:** Storing the motherboard firmware that initializes hardware and loads the operating system from secondary storage.\n*   **Embedded Systems:** Storing firmware inside microcontrollers used in household appliances, automotive electronic control units (ECUs), and calculators.\n*   **Firmware in Peripherals:** Storing operational code inside printers, routers, and hard drive controllers.\n\n---\n\n### 6. Conclusion\n\nWhile both RAM and ROM are crucial semiconductor memory components of a computer architecture, they serve completely distinct roles. RAM provides the high-speed, volatile workspace necessary for active computation and multitasking. ROM provides the permanent, non-volatile foundation required to boot the system and execute fundamental hardware routines. Together, they establish the primary memory hierarchy that allows a computing system to initialize and run applications efficiently.",
+            "status": "success",
+            "error": null,
+            "quality_evaluation": {
+                "expected_elements_count": 5,
+                "covered_elements_count": 4,
+                "coverage_percentage": 80.0,
+                "element_results": [
+                    {
+                        "element": "Volatility",
+                        "covered": true
+                    },
+                    {
+                        "element": "Data storage",
+                        "covered": false
+                    },
+                    {
+                        "element": "Read and write operations",
+                        "covered": true
+                    },
+                    {
+                        "element": "Speed",
+                        "covered": true
+                    },
+                    {
+                        "element": "Applications",
+                        "covered": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 2,
+            "category": "Data Structures",
+            "question": "Explain Binary Search Trees with an example. Describe insertion, searching and deletion operations.",
+            "expected_elements": [
+                "BST property",
+                "Node structure",
+                "Insertion",
+                "Searching",
+                "Deletion",
+                "Time complexity"
+            ],
+            "answer": "## 1. Definition and Introduction\n\nA **Binary Search Tree (BST)** is a hierarchical data structure composed of nodes, where each node contains a key, a value, and pointers to left and right child nodes. \n\nA binary search tree must satisfy the **Binary Search Tree Property** across every node in the tree:\n* The key (or value) in the **left subtree** of a node is strictly less than the key of that node.\n* The key (or value) in the **right subtree** of a node is strictly greater than the key of that node.\n* Both the left and right subtrees must also be binary search trees.\n\nThis recursive property ensures that data is inherently ordered, enabling efficient searching, insertion, and deletion operations.\n\n---\n\n## 2. Important Concepts and Characteristics\n\n* **Node Structure:** Each node contains three fields: `key`, `left_pointer`, and `right_pointer`.\n* **Subtree Ordering:** For any given node $X$, all elements in the left subtree are smaller than $X.\\text{key}$, and all elements in the right subtree are larger than $X.\\text{key}$.\n* **Duplicate Keys:** Standard BST definitions do not allow duplicate keys. In practical implementations, duplicates are either ignored or handled by maintaining a frequency count inside the node or appending duplicates to the right subtree.\n* **Balanced vs. Unbalanced:** \n  * In a **balanced** BST (such as an AVL tree or Red-Black Tree), heights of left and right subtrees of any node differ by at most one, guaranteeing $O(\\log n)$ operations.\n  * In a **standard (unbalanced)** BST, the tree can degrade into a linear chain (resembling a linked list) depending on the insertion order.\n\n---\n\n## 3. Working Mechanism and Operations\n\n### A. Searching Operation\nSearching starts at the root and compares the target value with the current node's key.\n* If the target equals the current key, the search is successful.\n* If the target is less than the current key, the search proceeds to the left child.\n* If the target is greater than the current key, the search proceeds to the right child.\n* If a null pointer is reached, the element is not in the tree.\n\n### B. Insertion Operation\nInsertion follows the exact path of a search operation:\n1. Compare the new key with the current node's key.\n2. If smaller, move to the left child. If the left child is null, insert the new node there.\n3. If larger, move to the right child. If the right child is null, insert the new node there.\n\n### C. Deletion Operation\nDeletion is the most complex operation because it must preserve the BST property. There are three primary cases when deleting a node $Z$:\n1. **Case 1: $Z$ has no children (Leaf Node):** Simply remove the node by setting its parent's pointer to `null`.\n2. **Case 2: $Z$ has one child:** Remove $Z$ and replace it with its single child by updating the parent's pointer.\n3. **Case 3: $Z$ has two children:** \n   * Find the **in-order successor** of $Z$ (the minimum value in $Z$'s right subtree) or the **in-order predecessor** (the maximum value in $Z$'s left subtree).\n   * Copy the successor's key/value into $Z$.\n   * Recursively delete the successor from its original position (which falls under Case 1 or Case 2).\n\n---\n\n## 4. Step-by-Step Example\n\nLet us construct a BST by inserting the following sequence of keys into an initially empty tree: \n$$\\{50, 30, 70, 20, 40, 60, 80\\}$$\n\n### Step-by-Step Insertion:\n1. **Insert 50:** Tree is empty. 50 becomes the root.\n2. **Insert 30:** $30 < 50$, goes to the left of 50.\n3. **Insert 70:** $70 > 50$, goes to the right of 50.\n4. **Insert 20:** $20 < 50$ (go left), $20 < 30$ (go left). Insert as left child of 30.\n5. **Insert 40:** $40 < 50$ (go left), $40 > 30$ (go right). Insert as right child of 30.\n6. **Insert 60:** $60 > 50$ (go right), $60 < 70$ (go left). Insert as left child of 70.\n7. **Insert 80:** $80 > 50$ (go right), $80 > 70$ (go right). Insert as right child of 70.\n\n**Tree Representation:**\n```text\n        50\n       /  \\\n      30   70\n     /  \\ /  \\\n    20  4060  80\n```\n\n### Searching Example (Search for 40):\n1. Compare $40$ with root ($50$). $40 < 50$, go left.\n2. Compare $40$ with $30$. $40 > 30$, go right.\n3. Compare $40$ with $40$. Match found! Return node.\n\n### Deletion Example (Delete node 30, which has two children):\n1. Locate node $30$. It has two children ($20$ and $40$).\n2. Find the in-order successor in the right subtree of $30$, which is $40$. (Alternatively, max of left subtree is $20$).\n3. Replace $30$'s key with $40$.\n4. Delete the original node $40$ from the right subtree (it has no children, Case 1).\n\n**Tree After Deleting 30:**\n```text\n        50\n       /  \\\n      40   70\n     /    /  \\\n    20   60   80\n```\n\n---\n\n## 5. Advantages and Disadvantages\n\n### Advantages:\n* **Dynamic Size:** Can grow and shrink efficiently during runtime compared to static arrays.\n* **Maintains Order:** In-order traversal of a BST produces a sorted sequence of elements.\n* **Efficient Average Operations:** Searching, insertion, and deletion operate in logarithmic time on average.\n\n### Disadvantages:\n* **Worst-Case Performance:** In the worst-case scenario (e.g., inserting sorted or reverse-sorted data), the tree becomes skewed, degenerating into a linked list.\n* **No O(1) Direct Access:** Unlike arrays, elements cannot be accessed via indices in constant time.\n* **Overhead:** Extra memory is required for storing left and right pointers in each node.\n\n---\n\n## 6. Applications\n\n* Implementing **symbol tables** in compilers and interpreters.\n* Maintaining dynamic sorted databases and associative arrays (e.g., `std::map` and `std::set` in C++ via self-balancing variants like Red-Black trees).\n* Implementing priority queues and routing tables in networking.\n* File system directory structures.\n\n---\n\n## 7. Time and Space Complexity\n\nLet $n$ be the number of nodes in the binary search tree, and $h$ be the height of the tree.\n\n| Operation | Average Case | Worst Case (Skewed Tree) |\n| :--- | :--- | :--- |\n| **Search** | $O(\\log n)$ | $O(n)$ |\n| **Insertion** | $O(\\log n)$ | $O(n)$ |\n| **Deletion** | $O(\\log n)$ | $O(n)$ |\n| **Space** | $O(n)$ | $O(n)$ |\n\n*Note: The average-case complexity of $O(\\log n)$ assumes the tree remains reasonably balanced. The worst-case complexity of $O(n)$ occurs when the tree height $h = n-1$.*\n\n---\n\n## 8. Conclusion\n\nA Binary Search Tree is a fundamental data structure that bridges the gap between linear lists and tree-based structures, providing efficient searching and ordered traversal capabilities. While standard BSTs are susceptible to worst-case linear performance under ordered inputs, understanding their core mechanics forms the foundation for self-balancing binary search trees (such as AVL and Red-Black trees) which enforce strict height constraints to guarantee logarithmic performance.",
+            "status": "success",
+            "error": null,
+            "quality_evaluation": {
+                "expected_elements_count": 6,
+                "covered_elements_count": 6,
+                "coverage_percentage": 100.0,
+                "element_results": [
+                    {
+                        "element": "BST property",
+                        "covered": true
+                    },
+                    {
+                        "element": "Node structure",
+                        "covered": true
+                    },
+                    {
+                        "element": "Insertion",
+                        "covered": true
+                    },
+                    {
+                        "element": "Searching",
+                        "covered": true
+                    },
+                    {
+                        "element": "Deletion",
+                        "covered": true
+                    },
+                    {
+                        "element": "Time complexity",
+                        "covered": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 3,
+            "category": "Data Structures",
+            "question": "Explain insertion and deletion operations in a Max Heap with suitable examples.",
+            "expected_elements": [
+                "Max heap property",
+                "Insertion",
+                "Heapify up",
+                "Deletion of root",
+                "Heapify down",
+                "Time complexity"
+            ],
+            "answer": "### Definition and Introduction\n\nA **Max Heap** is a complete binary tree that satisfies the **max-heap property**: for any given node $i$, the value of the node is greater than or equal to the values of its children. Consequently, the maximum element is always stored at the root of the tree (index $0$ in an array-based representation). \n\nIt is important to note that a heap maintains a strict **parent-child ordering**, not a total ordering between all elements. Elements in the left and right subtrees do not have a guaranteed relative order between themselves.\n\n---\n\n### Important Concepts and Characteristics\n\n* **Complete Binary Tree:** Every level of the tree, except possibly the last, is completely filled, and all nodes in the last level are as far left as possible. This allows Max Heaps to be efficiently implemented using a contiguous array.\n* **Array Mapping:** For a node at index $i$ (0-indexed):\n  * **Left Child Index:** $2i + 1$\n  * **Right Child Index:** $2i + 2$\n  * **Parent Index:** $\\lfloor(i - 1) / 2\\rfloor$\n\n---\n\n### Working Mechanism & Step-by-Step Procedures\n\n#### 1. Insertion Operation\nTo insert a new element into a Max Heap, we must preserve both the complete binary tree structure and the max-heap property.\n* **Procedure:**\n  1. Add the new element to the next available position at the very end of the array (which corresponds to the bottom-rightmost spot in the complete binary tree).\n  2. Compare the newly added element with its parent.\n  3. If the new element is greater than its parent, swap them.\n  4. Repeat this \"bubble-up\" or **percolate-up** process (also known as `heapify-up`) until the element is smaller than or equal to its parent, or it reaches the root.\n\n#### 2. Deletion Operation (Extracting the Maximum)\nTypically, deletion in a Max Heap refers to removing the maximum element, which is always located at the root.\n* **Procedure:**\n  1. Replace the root node with the last element in the heap (the bottom-rightmost node).\n  2. Remove the last element from its original position, reducing the heap size by $1$.\n  3. Compare the new root element with its children.\n  4. If it is smaller than the largest of its children, swap it with that child.\n  5. Repeat this \"sink-down\" or **percolate-down** process (also known as `heapify-down` or `sift-down`) until the max-heap property is restored.\n\n---\n\n### Suitable Example\n\nLet us trace insertion and deletion using an initial Max Heap.\n\n#### Initial Max Heap Array:\n`[50, 30, 40, 10, 20]`\n\nTree Representation:\n```text\n        50\n       /  \\\n     30    40\n    /  \\\n   10   20\n```\n\n---\n\n#### Example 1: Insertion of `45`\n\n1. **Step 1:** Append `45` to the end of the array.\n   Array becomes: `[50, 30, 40, 10, 20, 45]`\n   (Index of `45` is $5$; its parent is at index $\\lfloor(5-1)/2\\rfloor = 2$, which holds value `40`).\n\n2. **Step 2:** Compare `45` with its parent `40`. Since $45 > 40$, swap them.\n   Array becomes: `[50, 30, 45, 10, 20, 40]`\n   (New index of `45` is $2$; its parent is at index $\\lfloor(2-1)/2\\rfloor = 0$, which holds value `50`).\n\n3. **Step 3:** Compare `45` with its parent `50`. Since $45 \\le 50$, the process stops.\n\n**Final Heap After Insertion:** `[50, 30, 45, 10, 20, 40]`\n\n```text\n        50\n       /  \\\n     30    45\n    /  \\   /\n   10   20 40\n```\n\n---\n\n#### Example 2: Deletion of the Root (`50`)\n\nUsing the current heap: `[50, 30, 45, 10, 20, 40]`\n\n1. **Step 1:** Replace the root (`50`) with the last element (`40`).\n   Array becomes: `[40, 30, 45, 10, 20]` (size reduced by 1).\n\n2. **Step 2:** Percolate-down from the root (index $0$, value `40`).\n   * Children of index $0$ are at index $1$ (`30`) and index $2$ (`45`).\n   * The maximum child is `45` at index $2$.\n   * Compare `40` with `45`. Since $40 < 45$, swap them.\n\n   Array becomes: `[45, 30, 40, 10, 20]`\n   * Now `40` is at index $2$. Its children are outside the current heap bounds. Percolate-down terminates.\n\n**Final Heap After Deletion:** `[45, 30, 40, 10, 20]`\n\n```text\n        45\n       /  \\\n     30    40\n    /  \\\n   10   20\n```\n\n---\n\n### Advantages and Disadvantages\n\n* **Advantages:**\n  * Efficient access to the maximum element in $O(1)$ time.\n  * Fast insertion and deletion operations running in logarithmic time $O(\\log n)$.\n  * Space-efficient storage using arrays without explicit pointer overhead.\n* **Disadvantages:**\n  * Searching for an arbitrary element takes $O(n)$ time since it is not a binary search tree.\n  * Does not maintain elements in sorted order; traversal requires extracting elements one by one.\n\n---\n\n### Applications\n\n* **Priority Queues:** Implementing tasks where higher-priority elements must be processed first.\n* **Heap Sort:** An efficient comparison-based sorting algorithm.\n* **Graph Algorithms:** Used in algorithms like Dijkstra's shortest path and Prim's minimum spanning tree (when implemented with priority queues).\n\n---\n\n### Time and Space Complexity\n\n| Operation | Best Case | Average Case | Worst Case |\n| :--- | :--- | :--- | :--- |\n| **Insertion** | $O(1)$ | $O(\\log n)$ | $O(\\log n)$ |\n| **Deletion (Extract Max)** | $O(1)$ | $O(\\log n)$ | $O(\\log n)$ |\n| **Find Max (Peek)** | $O(1)$ | $O(1)$ | $O(1)$ |\n\n* **Space Complexity:** $O(n)$ to store $n$ elements in the underlying array.\n\n---\n\n### Conclusion\n\nMax Heaps provide a robust data structure for maintaining the dynamic maximum of a dataset. By leveraging a complete binary tree mapped to an array, both insertion and deletion operations efficiently maintain the max-heap property in logarithmic time complexity $O(\\log n)$, making them foundational for priority queues and sorting algorithms.",
+            "status": "success",
+            "error": null,
+            "quality_evaluation": {
+                "expected_elements_count": 6,
+                "covered_elements_count": 6,
+                "coverage_percentage": 100.0,
+                "element_results": [
+                    {
+                        "element": "Max heap property",
+                        "covered": true
+                    },
+                    {
+                        "element": "Insertion",
+                        "covered": true
+                    },
+                    {
+                        "element": "Heapify up",
+                        "covered": true
+                    },
+                    {
+                        "element": "Deletion of root",
+                        "covered": true
+                    },
+                    {
+                        "element": "Heapify down",
+                        "covered": true
+                    },
+                    {
+                        "element": "Time complexity",
+                        "covered": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 4,
+            "category": "Algorithms",
+            "question": "Explain Breadth First Search and Depth First Search. Compare their working, data structures and applications.",
+            "expected_elements": [
+                "BFS",
+                "DFS",
+                "Queue",
+                "Stack or recursion",
+                "Traversal",
+                "Applications",
+                "Complexity"
+            ],
+            "answer": "### 1. Introduction to Graph Traversal\n\nGraph traversal refers to the process of visiting every vertex (node) and edge in a graph systematically. In computer science, Breadth-First Search (BFS) and Depth-First Search (DFS) are the two fundamental graph traversal algorithms. They allow applications to explore network topologies, find paths, and analyze connectivity. \n\nWhile both algorithms visit every reachable vertex in a graph, they do so in fundamentally different orders, governed by the data structures they employ.\n\n---\n\n### 2. Breadth-First Search (BFS)\n\n#### Definition and Characteristics\nBreadth-First Search explores a graph level by level. Starting from a chosen source vertex, the algorithm visits all of its immediate neighbors before moving on to the neighbors of those neighbors. \n\n#### Working Mechanism\n1. BFS uses a **Queue** data structure, which follows the First-In-First-Out (FIFO) principle.\n2. It marks vertices as visited to prevent processing the same node multiple times and to avoid infinite loops in cyclic graphs.\n3. It explores the graph broadly, moving outward in concentric rings or layers from the source.\n\n#### Step-by-Step Procedure\n1. Select a starting vertex $s$ and mark it as visited.\n2. Push $s$ into the queue.\n3. While the queue is not empty:\n   a. Dequeue a vertex $u$ from the front of the queue and process it (e.g., print or evaluate it).\n   b. For every unvisited adjacent neighbor $v$ of $u$:\n      - Mark $v$ as visited.\n      - Enqueue $v$.\n\n#### Suitable Example\nConsider an unweighted graph where node $A$ is connected to $B$ and $C$, and $B$ is connected to $D$. \n* **BFS Order:** Starting at $A$, BFS visits $A$, then its neighbors level-1 ($B$, $C$), and finally the level-2 neighbor ($D$). Traversal order: **$A \\rightarrow B \\rightarrow C \\rightarrow D$**.\n\n#### Applications of BFS\n* Finding the shortest path in **unweighted** graphs (BFS guarantees the shortest path in terms of edge count).\n* Finding all connected components in an undirected graph.\n* Peer-to-peer networks (like BitTorrent) to find neighboring nodes.\n* Crawler design in search engines to index web pages level by level.\n\n#### Complexity\n* **Time Complexity:** $O(V + E)$, where $V$ is the number of vertices and $E$ is the number of edges, because every vertex and edge is processed at least once.\n* **Space Complexity:** $O(V)$, required to store the visited array, the queue, and the adjacency list. In the worst-case scenario (a \"star\" graph where a single node connects to all other $V-1$ nodes), the queue will hold $O(V)$ elements.\n\n---\n\n### 3. Depth-First Search (DFS)\n\n#### Definition and Characteristics\nDepth-First Search explores a graph by going as deep as possible along each branch before backtracking. It prioritizes depth over breadth.\n\n#### Working Mechanism\n1. DFS uses a **Stack** data structure, which follows the Last-In-First-Out (LIFO) principle. This can be implemented explicitly using a stack or implicitly through **recursion** (using the system call stack).\n2. It tracks visited nodes to prevent infinite loops.\n3. When it encounters a dead end (a vertex with no unvisited neighbors), it backtracks to the most recent vertex that has unexplored adjacent branches.\n\n#### Step-by-Step Procedure (Recursive Approach)\n1. Select a starting vertex $s$ and mark it as visited.\n2. Process vertex $s$.\n3. For every unvisited adjacent neighbor $v$ of $s$:\n   - Recursively call DFS for $v$.\n\n#### Suitable Example\nUsing the same graph from the BFS example ($A$ connected to $B$ and $C$, $B$ connected to $D$):\n* **DFS Order:** Starting at $A$, the algorithm goes deep down one path. It visits $A$, moves to $B$, and immediately goes deeper to $B$'s unvisited neighbor $D$. After hitting a dead end at $D$, it backtracks to $A$ and explores the remaining unvisited branch ($C$). Traversal order: **$A \\rightarrow B \\rightarrow D \\rightarrow C$**.\n\n#### Applications of DFS\n* Detecting cycles in directed and undirected graphs.\n* Topological sorting (used in job scheduling and dependency resolution).\n* Solving mazes and puzzle games (e.g., Sudoku).\n* Finding strongly connected components (e.g., Kosaraju's algorithm).\n* Generating graph paths or spanning trees.\n\n#### Complexity\n* **Time Complexity:** $O(V + E)$, as every vertex and edge is visited.\n* **Space Complexity:** $O(V)$. In the worst-case scenario (a linear graph resembling a linked list), the recursion stack will grow to a depth of $V$, requiring linear space.\n\n---\n\n### 4. Comparison Between BFS and DFS\n\n| Feature | Breadth-First Search (BFS) | Depth-First Search (DFS) |\n| :--- | :--- | :--- |\n| **Data Structure** | Queue (FIFO) | Stack (LIFO) or Recursion |\n| **Traversal Strategy** | Level by level (Broad) | Branch by branch (Deep) |\n| **Optimality** | Finds the **shortest path** in unweighted graphs. | Does not guarantee the shortest path. |\n| **Memory Usage** | Higher memory footprint in wide graphs (stores entire levels). | Higher memory footprint in deep graphs (stores entire paths). |\n| **Completeness** | Guaranteed to find a solution if it exists (in finite graphs). | May get stuck in infinite paths without a visited check/depth limit. |\n| **Primary Use Case** | Shortest path, neighbor discovery. | Cycle detection, topological sorting, pathfinding in mazes. |\n\n---\n\n### 5. Conclusion\n\nBoth BFS and DFS are foundational pillars of graph theory with complementary characteristics. BFS is the definitive choice when optimal path length (minimum steps) matters in unweighted networks, while DFS excels at exploring structural properties, tracking dependencies, and exhaustively searching decision spaces (such as paths in a maze). Selecting between them depends entirely on whether the problem requires exploring the immediate neighborhood or probing deep into individual pathways.",
+            "status": "success",
+            "error": null,
+            "quality_evaluation": {
+                "expected_elements_count": 7,
+                "covered_elements_count": 7,
+                "coverage_percentage": 100.0,
+                "element_results": [
+                    {
+                        "element": "BFS",
+                        "covered": true
+                    },
+                    {
+                        "element": "DFS",
+                        "covered": true
+                    },
+                    {
+                        "element": "Queue",
+                        "covered": true
+                    },
+                    {
+                        "element": "Stack or recursion",
+                        "covered": true
+                    },
+                    {
+                        "element": "Traversal",
+                        "covered": true
+                    },
+                    {
+                        "element": "Applications",
+                        "covered": true
+                    },
+                    {
+                        "element": "Complexity",
+                        "covered": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 5,
+            "category": "Numerical Problem Solving",
+            "question": "Convert binary number 101101 into decimal and hexadecimal. Show all calculation steps.",
+            "expected_elements": [
+                "Binary place values",
+                "Decimal conversion",
+                "Hexadecimal conversion",
+                "Calculation steps"
+            ],
+            "answer": "To convert the binary number $101101_2$ into decimal and hexadecimal, we will use standard positional notation.\n\n---\n\n### Part 1: Binary to Decimal Conversion ($101101_2$ to Decimal)\n\n#### 1. Identify the given values\n- Binary number: $101101_2$\n- Number of bits: $6$\n\n#### 2. State the conversion rule\nTo convert a binary number to decimal, multiply each bit by $2$ raised to the power of its position index, starting from $0$ on the rightmost bit (the Least Significant Bit, or LSB).\n\n$$\\text{Decimal} = \\sum_{i=0}^{n-1} b_i \\cdot 2^i$$\n\n#### 3. Show calculations step by step\nWrite out the binary digits with their corresponding powers of 2:\n\n$$\\begin{array}{c|c|c|c|c|c}\n\\text{Binary Digit } (b_i) & 1 & 0 & 1 & 1 & 0 & 1 \\\\\n\\hline\n\\text{Power of 2 } (2^i) & 2^5 & 2^4 & 2^3 & 2^2 & 2^1 & 2^0 \\\\\n\\hline\n\\text{Positional Value} & 32 & 16 & 8 & 4 & 2 & 1\n\\end{array}$$\n\nMultiply each binary digit by its positional value and sum the results:\n\n$$\\begin{align*}\n101101_2 &= (1 \\times 2^5) + (0 \\times 2^4) + (1 \\times 2^3) + (1 \\times 2^2) + (0 \\times 2^1) + (1 \\times 2^0) \\\\\n&= (1 \\times 32) + (0 \\times 16) + (1 \\times 8) + (1 \\times 4) + (0 \\times 2) + (1 \\times 1) \\\\\n&= 32 + 0 + 8 + 4 + 0 + 1 \\\\\n&= 45_{10}\n\\end{align*}$$\n\n#### 4. Verify the result\nWe can verify this by repeatedly dividing the decimal result by $2$ and noting the remainders:\n- $45 \\div 2 = 22$ remainder $1$ (LSB)\n- $22 \\div 2 = 11$ remainder $0$\n- $11 \\div 2 = 5$ remainder $1$\n- $5 \\div 2 = 2$ remainder $1$\n- $2 \\div 2 = 1$ remainder $0$\n- $1 \\div 2 = 0$ remainder $1$ (MSB)\n\nReading the remainders from bottom to top gives $101101_2$, which matches the original input.\n\n#### Final Decimal Answer\n$$\\mathbf{45_{10}}$$\n\n---\n\n### Part 2: Binary to Hexadecimal Conversion ($101101_2$ to Hexadecimal)\n\n#### 1. Identify the given values\n- Binary number: $101101_2$\n\n#### 2. State the conversion rule\nTo convert binary to hexadecimal, group the binary digits into sets of $4$ (nibbles) starting from the right (the LSB). If the leftmost group has fewer than $4$ bits, pad it with leading zeros on the left. Then, convert each 4-bit group into its corresponding hexadecimal digit (0–9, A–F).\n\n#### 3. Show calculations step by step\n**Step A: Group the bits into sets of 4 from right to left.**\n- Original: $101101$\n- Grouped: $0010 \\quad 1101$ *(added two leading zeros to complete the left nibble)*\n\n**Step B: Convert each nibble to decimal/hexadecimal.**\n- Left nibble: $0010_2$\n  $$(0 \\times 2^3) + (0 \\times 2^2) + (1 \\times 2^1) + (0 \\times 2^0) = 0 + 0 + 2 + 0 = 2_{10} \\rightarrow 2_{16}$$\n\n- Right nibble: $1101_2$\n  $$(1 \\times 2^3) + (1 \\times 2^2) + (0 \\times 2^1) + (1 \\times 2^0) = 8 + 4 + 0 + 1 = 13_{10}$$\n  *(In hexadecimal, decimal $13$ is represented by the letter $\\text{D}$)* $\\rightarrow \\text{D}_{16}$\n\n**Step C: Combine the hexadecimal digits.**\n$$2\\text{D}_{16}$$\n\n#### 4. Verify the result\nConvert the hexadecimal value $2\\text{D}_{16}$ back to decimal:\n$$(2 \\times 16^1) + (\\text{D} \\times 16^0) = (2 \\times 16) + (13 \\times 1) = 32 + 13 = 45_{10}$$\nThis matches our earlier decimal calculation.\n\n#### Final Hexadecimal Answer\n$$\\mathbf{2D_{16}}$$\n\n---\n\n### Conclusion\n- Binary: $101101_2$\n- Decimal: $\\mathbf{45_{10}}$\n- Hexadecimal: $\\mathbf{2D_{16}}$",
+            "status": "success",
+            "error": null,
+            "quality_evaluation": {
+                "expected_elements_count": 4,
+                "covered_elements_count": 4,
+                "coverage_percentage": 100.0,
+                "element_results": [
+                    {
+                        "element": "Binary place values",
+                        "covered": true
+                    },
+                    {
+                        "element": "Decimal conversion",
+                        "covered": true
+                    },
+                    {
+                        "element": "Hexadecimal conversion",
+                        "covered": true
+                    },
+                    {
+                        "element": "Calculation steps",
+                        "covered": true
+                    }
+                ]
+            }
+        },
+        {
+            "id": 6,
+            "category": "Programming",
+            "question": "Write a Python program to implement a stack using a list. Explain push, pop and peek operations.",
+            "expected_elements": [
+                "Python code",
+                "Push",
+                "Pop",
+                "Peek",
+                "Underflow handling",
+                "Time complexity"
+            ],
+            "answer": "Here is a complete, executable Python program implementing a stack data structure using a Python list, along with a detailed explanation of its core operations.\n\n### Python Implementation\n\n```python\nclass Stack:\n    \"\"\"A class representing a Stack data structure using a Python list.\"\"\"\n\n    def __init__(self):\n        \"\"\"Initializes an empty list to store stack elements.\"\"\"\n        self.items = []\n\n    def is_empty(self):\n        \"\"\"Returns True if the stack is empty, False otherwise.\"\"\"\n        return len(self.items) == 0\n\n    def push(self, item):\n        \"\"\"Adds an item to the top of the stack.\"\"\"\n        self.items.append(item)\n        print(f\"Pushed {item} into the stack.\")\n\n    def pop(self):\n        \"\"\"Removes and returns the top item from the stack.\n        Raises an IndexError if the stack is empty.\n        \"\"\"\n        if self.is_empty():\n            raise IndexError(\"pop from empty stack\")\n        removed_item = self.items.pop()\n        print(f\"Popped {removed_item} from the stack.\")\n        return removed_item\n\n    def peek(self):\n        \"\"\"Returns the top item from the stack without removing it.\n        Raises an IndexError if the stack is empty.\n        \"\"\"\n        if self.is_empty():\n            raise IndexError(\"peek from empty stack\")\n        return self.items[-1]\n\n    def size(self):\n        \"\"\"Returns the number of items in the stack.\"\"\"\n        return len(self.items)\n\n\n# --- Sample Execution ---\nif __name__ == \"__main__\":\n    # Create a stack object\n    my_stack = Stack()\n\n    # Test push operation\n    my_stack.push(10)\n    my_stack.push(20)\n    my_stack.push(30)\n\n    # Test peek operation\n    print(f\"Top element (peek): {my_stack.peek()}\")\n\n    # Test pop operation\n    my_stack.pop()\n\n    # Check top element after pop\n    print(f\"Top element after pop: {my_stack.peek()}\")\n\n    # Check stack size\n    print(f\"Current stack size: {my_stack.size()}\")\n```\n\n---\n\n### Explanation of Stack Operations\n\nA stack is a linear data structure that follows the **Last-In, First-Out (LIFO)** principle. This means that the element added most recently is the first one to be removed. \n\n#### 1. Push Operation\n* **Definition:** The push operation adds a new element to the top of the stack.\n* **Mechanism:** In our Python list implementation, we use the built-in `append()` method. Because the top of the stack is designated as the end of the list (`self.items[-1]`), appending to the list places the new element at the very end with minimal overhead.\n\n#### 2. Pop Operation\n* **Definition:** The pop operation removes and returns the element currently at the top of the stack.\n* **Mechanism:** We use the built-in list `pop()` method without any arguments. This removes the last element of the list (the top of the stack). \n* **Boundary Condition:** If the stack is empty, attempting to pop triggers an `IndexError` to prevent underflow.\n\n#### 3. Peek (or Top) Operation\n* **Definition:** The peek operation inspects the top element of the stack without removing it.\n* **Mechanism:** We access the last element of the list using negative indexing (`self.items[-1]`). \n* **Boundary Condition:** If the stack is empty, attempting to peek triggers an `IndexError`.\n\n---\n\n### Time and Space Complexity\n\n* **Push Operation:** \n  * **Time Complexity:** $O(1)$ amortized time. Python lists use dynamic arrays; occasionally, resizing the array takes $O(n)$ time, but individual appends average out to $O(1)$.\n* **Pop Operation:** \n  * **Time Complexity:** $O(1)$ time, because removing the last element of a Python list does not require shifting other elements.\n* **Peek Operation:** \n  * **Time Complexity:** $O(1)$ time, as accessing a list element by index is a constant-time operation.\n* **Space Complexity:** \n  * **Space Complexity:** $O(n)$, where $n$ is the number of elements currently stored in the stack.",
+            "status": "success",
+            "error": null,
+            "quality_evaluation": {
+                "expected_elements_count": 6,
+                "covered_elements_count": 6,
+                "coverage_percentage": 100.0,
+                "element_results": [
+                    {
+                        "element": "Python code",
+                        "covered": true
+                    },
+                    {
+                        "element": "Push",
+                        "covered": true
+                    },
+                    {
+                        "element": "Pop",
+                        "covered": true
+                    },
+                    {
+                        "element": "Peek",
+                        "covered": true
+                    },
+                    {
+                        "element": "Underflow handling",
+                        "covered": true
+                    },
+                    {
+                        "element": "Time complexity",
+                        "covered": true
+                    }
+                ]
+            }
+        }
+    ]
+}

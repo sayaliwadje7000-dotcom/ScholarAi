@@ -1,0 +1,78 @@
+[
+    {
+        "id": 1,
+        "category": "Computer Science Fundamentals",
+        "question": "Explain the difference between RAM and ROM with their characteristics, advantages, disadvantages and applications.",
+        "expected_elements": [
+            "Volatility",
+            "Data storage",
+            "Read and write operations",
+            "Speed",
+            "Applications"
+        ]
+    },
+    {
+        "id": 2,
+        "category": "Data Structures",
+        "question": "Explain Binary Search Trees with an example. Describe insertion, searching and deletion operations.",
+        "expected_elements": [
+            "BST property",
+            "Node structure",
+            "Insertion",
+            "Searching",
+            "Deletion",
+            "Time complexity"
+        ]
+    },
+    {
+        "id": 3,
+        "category": "Data Structures",
+        "question": "Explain insertion and deletion operations in a Max Heap with suitable examples.",
+        "expected_elements": [
+            "Max heap property",
+            "Insertion",
+            "Heapify up",
+            "Deletion of root",
+            "Heapify down",
+            "Time complexity"
+        ]
+    },
+    {
+        "id": 4,
+        "category": "Algorithms",
+        "question": "Explain Breadth First Search and Depth First Search. Compare their working, data structures and applications.",
+        "expected_elements": [
+            "BFS",
+            "DFS",
+            "Queue",
+            "Stack or recursion",
+            "Traversal",
+            "Applications",
+            "Complexity"
+        ]
+    },
+    {
+        "id": 5,
+        "category": "Numerical Problem Solving",
+        "question": "Convert binary number 101101 into decimal and hexadecimal. Show all calculation steps.",
+        "expected_elements": [
+            "Binary place values",
+            "Decimal conversion",
+            "Hexadecimal conversion",
+            "Calculation steps"
+        ]
+    },
+    {
+        "id": 6,
+        "category": "Programming",
+        "question": "Write a Python program to implement a stack using a list. Explain push, pop and peek operations.",
+        "expected_elements": [
+            "Python code",
+            "Push",
+            "Pop",
+            "Peek",
+            "Underflow handling",
+            "Time complexity"
+        ]
+    }
+]

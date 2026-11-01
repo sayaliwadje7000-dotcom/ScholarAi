@@ -1914,3 +1914,117 @@ select:focus-visible,
         animation: none;
     }
 }
+
+
+
+/* ScholarAI — Markdown table alignment fix */
+
+.chat-message-text {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: normal;
+    word-break: normal;
+}
+
+/* Table wrapper */
+.chat-message-text .chat-table-wrapper {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    margin: 16px 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Table layout */
+.chat-message-text .chat-table-wrapper table {
+    width: 100%;
+    min-width: 360px;
+    table-layout: fixed;
+    border-collapse: collapse;
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.65;
+}
+
+/* Set consistent column widths */
+.chat-message-text .chat-table-wrapper th:first-child,
+.chat-message-text .chat-table-wrapper td:first-child {
+    width: 28%;
+}
+
+.chat-message-text .chat-table-wrapper th:nth-child(2),
+.chat-message-text .chat-table-wrapper td:nth-child(2),
+.chat-message-text .chat-table-wrapper th:nth-child(3),
+.chat-message-text .chat-table-wrapper td:nth-child(3) {
+    width: 36%;
+}
+
+/* Cell alignment and spacing */
+.chat-message-text .chat-table-wrapper th,
+.chat-message-text .chat-table-wrapper td {
+    padding: 10px 8px;
+    text-align: left;
+    vertical-align: top;
+    white-space: normal;
+    overflow-wrap: normal;
+    word-break: normal;
+    hyphens: none;
+    border: 1px solid rgba(128, 128, 128, 0.25);
+}
+
+/* Header */
+.chat-message-text .chat-table-wrapper thead th {
+    font-weight: 700;
+    vertical-align: middle;
+}
+
+/* First column labels */
+.chat-message-text .chat-table-wrapper tbody td:first-child {
+    font-weight: 600;
+}
+
+/* Alternating rows */
+.chat-message-text .chat-table-wrapper tbody tr:nth-child(even) {
+    background: rgba(128, 128, 128, 0.06);
+}
+/* ScholarAI — Copy message button */
+
+.chat-message-actions {
+    display: flex;
+    justify-content: flex-start;
+    margin-top: 10px;
+}
+
+.copy-message-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition:
+        background-color 0.2s ease,
+        border-color 0.2s ease,
+        color 0.2s ease;
+}
+
+.copy-message-button:hover {
+    background: rgba(128, 20, 55, 0.1);
+    border-color: #801437;
+}
+
+.copy-message-button.is-copied {
+    color: #278451;
+    border-color: #278451;
+}
+
+.copy-message-button:focus-visible {
+    outline: 2px solid #801437;
+    outline-offset: 3px;
+}

@@ -161,6 +161,188 @@ document.addEventListener("DOMContentLoaded", () => {
             "'": "&#39;"
         })[character]);
     }
+    function renderMarkdown(text) {
+    const escaped = escapeHTML(text);
+    const lines = escaped.split(/\r?\n/);
+    const output = [];
+
+    function inlineMarkdown(value) {
+        return value
+            .replace(/`([^`]+)`/g, "<code>$1</code>")
+            .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+            .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
+    }
+
+    function isTableRow(line) {
+        return /^\s*\|.*\|\s*$/.test(line);
+    }
+
+    function isTableSeparator(line) {
+        return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+    }
+
+    function getCells(line) {
+        return line
+            .trim()
+            .replace(/^\|/, "")
+            .replace(/\|$/, "")
+            .split("|")
+            .map(cell => cell.trim());
+    }
+
+    let inCodeBlock = false;
+    let codeLines = [];
+    let listType = null;
+    let paragraph = [];
+
+    function closeList() {
+        if (listType) {
+            output.push(`</${listType}>`);
+            listType = null;
+        }
+    }
+
+    function flushParagraph() {
+        if (paragraph.length) {
+            output.push(
+                `<p>${inlineMarkdown(paragraph.join(" "))}</p>`
+            );
+            paragraph = [];
+        }
+    }
+
+    function renderTable(headerLine, rows) {
+        const headers = getCells(headerLine);
+
+        output.push('<div class="chat-table-wrapper"><table>');
+        output.push("<thead><tr>");
+
+        headers.forEach(header => {
+            output.push(`<th>${inlineMarkdown(header)}</th>`);
+        });
+
+        output.push("</tr></thead><tbody>");
+
+        rows.forEach(row => {
+            const cells = getCells(row);
+
+            output.push("<tr>");
+
+            headers.forEach((_, index) => {
+                output.push(
+                    `<td>${inlineMarkdown(cells[index] || "")}</td>`
+                );
+            });
+
+            output.push("</tr>");
+        });
+
+        output.push("</tbody></table></div>");
+    }
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+
+        if (trimmed.startsWith("```")) {
+            flushParagraph();
+            closeList();
+
+            if (inCodeBlock) {
+                output.push(
+                    `<pre><code>${codeLines.join("\n")}</code></pre>`
+                );
+                codeLines = [];
+                inCodeBlock = false;
+            } else {
+                inCodeBlock = true;
+            }
+
+            continue;
+        }
+
+        if (inCodeBlock) {
+            codeLines.push(line);
+            continue;
+        }
+
+        if (
+            isTableRow(line) &&
+            i + 1 < lines.length &&
+            isTableSeparator(lines[i + 1])
+        ) {
+            flushParagraph();
+            closeList();
+
+            const headerLine = line;
+            const rows = [];
+            i += 2;
+
+            while (i < lines.length && isTableRow(lines[i])) {
+                rows.push(lines[i]);
+                i++;
+            }
+
+            i--;
+            renderTable(headerLine, rows);
+            continue;
+        }
+
+        if (!trimmed) {
+            flushParagraph();
+            closeList();
+            continue;
+        }
+
+        const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+
+        if (heading) {
+            flushParagraph();
+            closeList();
+
+            const level = heading[1].length;
+
+            output.push(
+                `<h${level}>${inlineMarkdown(heading[2])}</h${level}>`
+            );
+
+            continue;
+        }
+
+        const unordered = trimmed.match(/^[-*+]\s+(.+)$/);
+        const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+
+        if (unordered || ordered) {
+            flushParagraph();
+
+            const nextType = unordered ? "ul" : "ol";
+
+            if (listType !== nextType) {
+                closeList();
+                output.push(`<${nextType}>`);
+                listType = nextType;
+            }
+
+            const content = unordered
+                ? unordered[1]
+                : ordered[1];
+
+            output.push(`<li>${inlineMarkdown(content)}</li>`);
+            continue;
+        }
+
+        paragraph.push(trimmed);
+    }
+
+    if (inCodeBlock) {
+        output.push(`<pre><code>${codeLines.join("\n")}</code></pre>`);
+    }
+
+    flushParagraph();
+    closeList();
+
+    return output.join("");
+}
 
     function loadConversations() {
         try {
@@ -347,70 +529,72 @@ document.addEventListener("DOMContentLoaded", () => {
     // CHAT MESSAGE DISPLAY
     // ==========================================================
 
-    function messageMarkup(conversation) {
-        const messages = conversation?.messages || [];
+   function messageMarkup(conversation) {
+    const messages = conversation?.messages || [];
 
-        if (!messages.length) {
-            return `
-                <div class="chat-empty-state">
-                    <div class="chat-empty-mark" aria-hidden="true">S</div>
+    if (!messages.length) {
+        return `
+            <div class="chat-empty-state">
+                <div class="chat-empty-mark" aria-hidden="true">S</div>
+                <h2>What would you like to learn?</h2>
+                <p>Ask a study question to start a conversation.</p>
 
-                    <h2>What would you like to learn?</h2>
+                <div class="chat-suggestions">
+                    <button type="button" class="suggestion-chip"
+                        data-prompt="Explain a difficult concept in simple terms">
+                        Explain a concept
+                    </button>
 
-                    <p>Ask a study question to start a conversation.</p>
+                    <button type="button" class="suggestion-chip"
+                        data-prompt="Help me create a study plan">
+                        Create a study plan
+                    </button>
 
-                    <div class="chat-suggestions">
-                        <button
-                            type="button"
-                            class="suggestion-chip"
-                            data-prompt="Explain a difficult concept in simple terms"
-                        >
-                            Explain a concept
-                        </button>
-
-                        <button
-                            type="button"
-                            class="suggestion-chip"
-                            data-prompt="Help me create a study plan"
-                        >
-                            Create a study plan
-                        </button>
-
-                        <button
-                            type="button"
-                            class="suggestion-chip"
-                            data-prompt="Give me practice questions for a topic"
-                        >
-                            Practise a topic
-                        </button>
-                    </div>
+                    <button type="button" class="suggestion-chip"
+                        data-prompt="Give me practice questions for a topic">
+                        Practise a topic
+                    </button>
                 </div>
-            `;
-        }
-
-        return messages.map(message => `
-            <article class="chat-message ${
-                message.role === "user"
-                    ? "user-message"
-                    : "assistant-message"
-            }">
-                <div class="chat-message-avatar" aria-hidden="true">
-                    ${message.role === "user" ? "S" : "AI"}
-                </div>
-
-                <div class="chat-message-content">
-                    <p class="chat-message-role">
-                        ${message.role === "user" ? "You" : "ScholarAI"}
-                    </p>
-
-                    <div class="chat-message-text">${
-                        escapeHTML(message.text).replace(/\n/g, "<br>")
-                    }</div>
-                </div>
-            </article>
-        `).join("");
+            </div>
+        `;
     }
 
+    return messages.map((message, index) => `
+        <article class="chat-message ${
+            message.role === "user"
+                ? "user-message"
+                : "assistant-message"
+        }">
+            <div class="chat-message-avatar" aria-hidden="true">
+                ${message.role === "user" ? "S" : "AI"}
+            </div>
+
+            <div class="chat-message-content">
+                <p class="chat-message-role">
+                    ${message.role === "user" ? "You" : "ScholarAI"}
+                </p>
+
+                <div class="chat-message-text">${
+                    renderMarkdown(message.text)
+                }</div>
+
+                <div class="chat-message-actions">
+                    <button
+                        type="button"
+                        class="copy-message-button"
+                        data-copy-message-index="${index}"
+                        data-copy-conversation-id="${escapeHTML(conversation.id)}"
+                        aria-label="Copy this message"
+                        title="Copy message"
+                    >
+                        <span aria-hidden="true">▢</span>
+                        Copy
+                    </button>
+                </div>
+            </div>
+        </article>
+    `).join("");
+}
     // ==========================================================
     // AI ASSISTANT PAGE
     // ==========================================================
@@ -934,12 +1118,90 @@ console.log(
 
         return null;
     }
+// ==========================================================
+// COPY CHAT MESSAGE
+// ==========================================================
 
+async function copyMessage(copyButton) {
+    const conversationId =
+        copyButton.dataset.copyConversationId;
+
+    const messageIndex =
+        Number(copyButton.dataset.copyMessageIndex);
+
+    const conversation = conversations.find(
+        item => item.id === conversationId
+    );
+
+    const message = conversation?.messages[messageIndex];
+
+    if (!message || typeof message.text !== "string") {
+        showToast("Unable to find this message.", "error");
+        return;
+    }
+
+    const textToCopy = message.text;
+
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(textToCopy);
+        } else {
+            const temporaryInput = document.createElement("textarea");
+
+            temporaryInput.value = textToCopy;
+            temporaryInput.setAttribute("readonly", "");
+            temporaryInput.style.position = "fixed";
+            temporaryInput.style.left = "-9999px";
+
+            document.body.appendChild(temporaryInput);
+            temporaryInput.select();
+
+            const copied = document.execCommand("copy");
+            temporaryInput.remove();
+
+            if (!copied) {
+                throw new Error("Clipboard copy failed.");
+            }
+        }
+
+        const originalHTML = copyButton.innerHTML;
+
+        copyButton.innerHTML =
+            '<span aria-hidden="true">✓</span> Copied';
+
+        copyButton.classList.add("is-copied");
+
+        showToast("Message copied to clipboard.", "success", 1800);
+
+        window.setTimeout(() => {
+            if (copyButton.isConnected) {
+                copyButton.innerHTML = originalHTML;
+                copyButton.classList.remove("is-copied");
+            }
+        }, 1600);
+
+    } catch (error) {
+        console.error("ScholarAI: Could not copy message.", error);
+
+        showToast(
+            "Could not copy the message. Please try again.",
+            "error"
+        );
+    }
+}
     // ==========================================================
     // CLICK EVENTS
     // ==========================================================
 
-    document.addEventListener("click", event => {
+    document.addEventListener("click", async event => {
+    const copyButton = event.target.closest(
+        "[data-copy-message-index]"
+    );
+
+    if (copyButton) {
+        await copyMessage(copyButton);
+        return;
+    }
         const nav = event.target.closest(
             ".sidebar-nav .nav-item"
         );

@@ -1,22 +1,14 @@
-
 "use strict";
 
 /**
  * ScholarAI Frontend API Client
- *
- * Phase 4.3
- *
- * Communicates with the FastAPI backend.
- * Real LLM responses will be implemented in Phase 5.
+ * Phase 5: LLM Integration
  */
 
 (function () {
     const API_BASE_URL = "http://127.0.0.1:8000";
-    const REQUEST_TIMEOUT_MS = 30000;
+    const REQUEST_TIMEOUT_MS = 660000;
 
-    /**
-     * Send a request to the ScholarAI backend.
-     */
     async function request(endpoint, options = {}) {
         const controller = new AbortController();
 
@@ -69,7 +61,6 @@
 
                 const error = new Error(message);
                 error.status = response.status;
-
                 throw error;
             }
 
@@ -83,7 +74,7 @@
         } catch (error) {
             if (error.name === "AbortError") {
                 throw new Error(
-                    "The request timed out. Please try again."
+                    "The request took too long. Please try again."
                 );
             }
 
@@ -101,9 +92,6 @@
         }
     }
 
-    /**
-     * Send an academic question to the chat API.
-     */
     async function sendChatMessage(message, conversationId = null) {
         const trimmedMessage = String(message || "").trim();
 
@@ -142,9 +130,6 @@
         return data;
     }
 
-    /**
-     * Check backend health.
-     */
     async function checkHealth() {
         return request("/health");
     }
@@ -154,4 +139,3 @@
         checkHealth,
     });
 })();
-

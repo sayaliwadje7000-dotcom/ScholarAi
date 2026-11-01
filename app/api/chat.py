@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.services.chat_service import generate_chat_response
@@ -12,15 +12,20 @@ router = APIRouter()
     response_model=ChatResponse,
     summary="Ask ScholarAI a question",
     description=(
-        "Accepts a student's academic question and returns a response. "
-        "Currently uses a temporary placeholder service; LLM integration "
-        "will be added in Phase 5."
+        "Accepts a student's academic question and returns an "
+        "AI-generated response using the locally running Ollama model."
     ),
 )
-def chat(request: ChatRequest) -> ChatResponse:
-    """Process an academic question and return a response."""
+async def chat(request: ChatRequest) -> ChatResponse:
+    """Process an academic question using the LLM service."""
 
-    answer = generate_chat_response(request.message)
+    try:
+        answer = await generate_chat_response(request.message)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+        ) from exc
 
     return ChatResponse(
         answer=answer,

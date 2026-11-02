@@ -67,10 +67,8 @@ class RecommendationFeedback(Base):
             name="uq_recommendation_feedback_recommendation_id",
         ),
 
-        Index(
-            "ix_recommendation_feedback_recommendation_id",
-            "recommendation_id",
-        ),
+        
+        
 
         Index(
             "ix_recommendation_feedback_feedback_type",

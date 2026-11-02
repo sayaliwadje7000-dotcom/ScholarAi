@@ -106,22 +106,15 @@ class Recommendation(Base):
         "StudyResource",
         back_populates="recommendations",
     )
-    feedback_entries: Mapped[list["RecommendationFeedback"]] = relationship(
+    feedback_entries: Mapped[
+    list["RecommendationFeedback"]
+] = relationship(
     "RecommendationFeedback",
     back_populates="recommendation",
     cascade="all, delete-orphan",
     passive_deletes=True,
     order_by="RecommendationFeedback.created_at",
 )
-    feedback_entries: Mapped[
-        list["RecommendationFeedback"]
-    ] = relationship(
-        "RecommendationFeedback",
-        back_populates="recommendation",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-        order_by="RecommendationFeedback.created_at",
-    )
 
     __table_args__ = (
 

@@ -99,7 +99,7 @@ def test_feedback_has_expected_indexes():
     }
 
     expected = {
-        "ix_recommendation_feedback_recommendation_id",
+        
         "ix_recommendation_feedback_feedback_type",
         "ix_recommendation_feedback_created_at",
     }

@@ -28,7 +28,7 @@ MODEL_TABLES = {
     "conversations",
     "messages",
     "user_preferences",
-    "documents"
+    "documents",
     "learning_activities",
      "study_resources",
      "resource_categories",

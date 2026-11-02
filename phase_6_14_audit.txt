@@ -1,0 +1,1950 @@
+
+
+========== conversation.py ==========
+
+import uuid
+
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    func,
+)
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database.base import Base
+
+
+class Conversation(Base):
+    """
+    Represents a conversation between a ScholarAI user
+    and the AI assistant.
+    """
+
+    __tablename__ = "conversations"
+
+    __table_args__ = (
+        Index(
+            "ix_conversations_user_id",
+            "user_id",
+        ),
+        Index(
+            "ix_conversations_user_updated",
+            "user_id",
+            "updated_at",
+        ),
+    )
+
+    # Primary key.
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=lambda context: uuid.uuid4(),
+    )
+
+    # Owner of the conversation.
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+            name="fk_conversations_user_id_users",
+        ),
+        nullable=False,
+    )
+
+    # Optional conversation title.
+    title: Mapped[str | None] = mapped_column(
+        String(200),
+        nullable=True,
+    )
+
+    # Archive status.
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+
+    # Creation timestamp.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+    # Last modification timestamp.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+    # Relationship with User.
+    user: Mapped["User"] = relationship(
+        "User",
+        back_populates="conversations",
+    )
+
+    # Messages belonging to this conversation.
+    messages: Mapped[list["Message"]] = relationship(
+        "Message",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="Message.created_at",
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<Conversation(id={self.id}, "
+            f"user_id={self.user_id}, "
+            f"title={self.title!r}, "
+            f"is_archived={self.is_archived})>"
+        )
+
+
+========== document.py ==========
+
+import uuid
+
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+    text,
+)
+
+from sqlalchemy.dialects.postgresql import UUID
+
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database.base import Base
+
+
+class Document(Base):
+    """
+    Represents an uploaded academic document
+    belonging to a ScholarAI user.
+
+    The database stores document metadata.
+    Actual document files are stored externally.
+    """
+
+    __tablename__ = "documents"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "storage_key",
+            name="uq_documents_storage_key",
+        ),
+
+        CheckConstraint(
+            "file_size_bytes > 0",
+            name="ck_documents_positive_file_size",
+        ),
+
+        CheckConstraint(
+            "page_count IS NULL OR page_count > 0",
+            name="ck_documents_positive_page_count",
+        ),
+
+        CheckConstraint(
+            "processing_status IN "
+            "('pending', 'processing', 'completed', 'failed')",
+            name="ck_documents_valid_processing_status",
+        ),
+
+        CheckConstraint(
+            "checksum_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_documents_valid_sha256",
+        ),
+
+        Index(
+            "ix_documents_user_id",
+            "user_id",
+        ),
+
+        Index(
+            "ix_documents_processing_status",
+            "processing_status",
+        ),
+
+        Index(
+            "ix_documents_user_uploaded",
+            "user_id",
+            "uploaded_at",
+        ),
+    )
+
+    # Primary key.
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    # Document owner.
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+            name="fk_documents_user_id_users",
+        ),
+        nullable=False,
+    )
+
+    # Original uploaded filename.
+    original_filename: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    # Internal storage identifier.
+    storage_key: Mapped[str] = mapped_column(
+        String(512),
+        nullable=False,
+    )
+
+    # Document MIME type.
+    mime_type: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+    )
+
+    # File size in bytes.
+    file_size_bytes: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+
+    # SHA-256 checksum.
+    checksum_sha256: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+
+    # Number of pages.
+    page_count: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    # Document processing state.
+    processing_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="pending",
+        server_default=text("'pending'"),
+    )
+
+    # Upload timestamp.
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+    # Relationship with User.
+    user: Mapped["User"] = relationship(
+        "User",
+        back_populates="documents",
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<Document("
+            f"id={self.id}, "
+            f"user_id={self.user_id}, "
+            f"filename={self.original_filename!r}, "
+            f"status={self.processing_status!r}"
+            f")>"
+        )
+
+
+========== learning_activity.py ==========
+
+import uuid
+
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    func,
+    text,
+)
+
+from sqlalchemy.dialects.postgresql import UUID, JSONB
+
+from sqlalchemy.ext.mutable import MutableDict
+
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database.base import Base
+
+
+class LearningActivity(Base):
+    """
+    Represents an activity performed by a ScholarAI user.
+
+    Activities may include document uploads, study sessions,
+    AI questions, quiz attempts, and resource interactions.
+
+    Additional activity information is stored in JSONB.
+    """
+
+    __tablename__ = "learning_activities"
+
+    __table_args__ = (
+
+        CheckConstraint(
+            "length(trim(activity_type)) > 0",
+            name="ck_learning_activities_nonempty_activity_type",
+        ),
+
+        CheckConstraint(
+            "entity_type IS NULL OR length(trim(entity_type)) > 0",
+            name="ck_learning_activities_valid_entity_type",
+        ),
+
+        CheckConstraint(
+            """
+            (entity_type IS NULL AND entity_id IS NULL)
+            OR
+            (entity_type IS NOT NULL AND entity_id IS NOT NULL)
+            """,
+            name="ck_learning_activities_entity_reference_pair",
+        ),
+
+        CheckConstraint(
+            "duration_seconds IS NULL OR duration_seconds >= 0",
+            name="ck_learning_activities_nonnegative_duration",
+        ),
+
+        Index(
+            "ix_learning_activities_user_id",
+            "user_id",
+        ),
+
+        Index(
+            "ix_learning_activities_occurred_at",
+            "occurred_at",
+        ),
+
+        Index(
+            "ix_learning_activities_user_occurred",
+            "user_id",
+            "occurred_at",
+        ),
+
+        Index(
+            "ix_learning_activities_entity",
+            "entity_type",
+            "entity_id",
+        ),
+    )
+
+    # Primary key.
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    # User who performed the activity.
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+            name="fk_learning_activities_user_id_users",
+        ),
+        nullable=False,
+    )
+
+    # Type of activity performed.
+    activity_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+    )
+
+    # Type of associated entity.
+    entity_type: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+
+    # ID of the associated entity.
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+    )
+
+    # Duration of activity in seconds.
+    duration_seconds: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    # Additional activity information.
+    # Python attribute: activity_metadata
+    # PostgreSQL column: metadata
+    activity_metadata: Mapped[dict] = mapped_column(
+        "metadata",
+        MutableDict.as_mutable(JSONB),
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    # Activity timestamp.
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+    # Relationship with User.
+    user: Mapped["User"] = relationship(
+        "User",
+        back_populates="learning_activities",
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<LearningActivity("
+            f"id={self.id}, "
+            f"user_id={self.user_id}, "
+            f"activity_type={self.activity_type!r}, "
+            f"entity_type={self.entity_type!r}"
+            f")>"
+        )
+
+
+========== message.py ==========
+
+import uuid
+
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+)
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database.base import Base
+
+
+class Message(Base):
+    """
+    Represents an individual message in a ScholarAI conversation.
+    """
+
+    __tablename__ = "messages"
+
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('user', 'assistant', 'system')",
+            name="ck_messages_valid_role",
+        ),
+        CheckConstraint(
+            "token_count IS NULL OR token_count >= 0",
+            name="ck_messages_nonnegative_token_count",
+        ),
+        Index(
+            "ix_messages_conversation_created",
+            "conversation_id",
+            "created_at",
+        ),
+    )
+
+    # Primary key.
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=lambda context: uuid.uuid4(),
+    )
+
+    # Conversation to which this message belongs.
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "conversations.id",
+            ondelete="CASCADE",
+            name="fk_messages_conversation_id_conversations",
+        ),
+        nullable=False,
+    )
+
+    # Message sender.
+    role: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+    )
+
+    # Message content.
+    content: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    # Number of tokens used by the message.
+    token_count: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    # Message creation timestamp.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+    # Parent conversation.
+    conversation: Mapped["Conversation"] = relationship(
+        "Conversation",
+        back_populates="messages",
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<Message(id={self.id}, "
+            f"conversation_id={self.conversation_id}, "
+            f"role='{self.role}')>"
+        )
+
+
+========== recommendation.py ==========
+
+from datetime import datetime
+from decimal import Decimal
+from uuid import UUID, uuid4
+
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.ext.mutable import MutableDict
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database.base import Base
+
+
+class Recommendation(Base):
+
+    __tablename__ = "recommendations"
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+
+    user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    resource_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("study_resources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    recommendation_type: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+    )
+
+    score: Mapped[Decimal] = mapped_column(
+        Numeric(5, 4),
+        nullable=False,
+    )
+
+    rank_position: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+
+    reason: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="generated",
+        server_default="generated",
+    )
+
+    algorithm_version: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="v1",
+        server_default="v1",
+    )
+
+    recommendation_metadata: Mapped[dict] = mapped_column(
+        "metadata",
+        MutableDict.as_mutable(JSONB),
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    user: Mapped["User"] = relationship(
+        "User",
+        back_populates="recommendations",
+    )
+
+    resource: Mapped["StudyResource"] = relationship(
+        "StudyResource",
+        back_populates="recommendations",
+    )
+    feedback_entries: Mapped[list["RecommendationFeedback"]] = relationship(
+    "RecommendationFeedback",
+    back_populates="recommendation",
+    cascade="all, delete-orphan",
+    passive_deletes=True,
+    order_by="RecommendationFeedback.created_at",
+)
+    feedback_entries: Mapped[
+        list["RecommendationFeedback"]
+    ] = relationship(
+        "RecommendationFeedback",
+        back_populates="recommendation",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="RecommendationFeedback.created_at",
+    )
+
+    __table_args__ = (
+
+        CheckConstraint(
+            """
+            recommendation_type IN (
+                'personalized',
+                'trending',
+                'related',
+                'popular',
+                'continue_learning'
+            )
+            """,
+            name="ck_recommendations_valid_type",
+        ),
+
+        CheckConstraint(
+            "score >= 0 AND score <= 1",
+            name="ck_recommendations_valid_score",
+        ),
+
+        CheckConstraint(
+            "rank_position >= 1",
+            name="ck_recommendations_valid_rank",
+        ),
+
+        CheckConstraint(
+            """
+            status IN (
+                'generated',
+                'presented',
+                'clicked',
+                'dismissed',
+                'expired'
+            )
+            """,
+            name="ck_recommendations_valid_status",
+        ),
+
+        CheckConstraint(
+            "length(trim(reason)) > 0",
+            name="ck_recommendations_reason_nonempty",
+        ),
+
+        CheckConstraint(
+            "length(trim(algorithm_version)) > 0",
+            name="ck_recommendations_algorithm_version_nonempty",
+        ),
+
+        CheckConstraint(
+            "expires_at IS NULL OR expires_at > generated_at",
+            name="ck_recommendations_valid_expiration",
+        ),
+
+        CheckConstraint(
+            "jsonb_typeof(metadata) = 'object'",
+            name="ck_recommendations_metadata_object",
+        ),
+
+        Index(
+            "ix_recommendations_user_id",
+            "user_id",
+        ),
+
+        Index(
+            "ix_recommendations_resource_id",
+            "resource_id",
+        ),
+
+        Index(
+            "ix_recommendations_status",
+            "status",
+        ),
+
+        Index(
+            "ix_recommendations_score",
+            "score",
+        ),
+
+        Index(
+            "ix_recommendations_generated_at",
+            "generated_at",
+        ),
+
+        Index(
+            "ix_recommendations_user_rank",
+            "user_id",
+            "rank_position",
+        ),
+
+        Index(
+            "ix_recommendations_user_status",
+            "user_id",
+            "status",
+        ),
+    )
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("id", uuid4())
+        kwargs.setdefault("recommendation_metadata", {})
+        kwargs.setdefault("status", "generated")
+        kwargs.setdefault("algorithm_version", "v1")
+
+        super().__init__(**kwargs)
+
+    def __repr__(self) -> str:
+        return (
+            f"<Recommendation("
+            f"id={self.id}, "
+            f"user_id={self.user_id}, "
+            f"resource_id={self.resource_id}, "
+            f"score={self.score}, "
+            f"status={self.status!r})>"
+        )
+
+
+========== recommendation_feedback.py ==========
+
+import uuid
+
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    TIMESTAMP,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database.base import Base
+
+
+class RecommendationFeedback(Base):
+    __tablename__ = "recommendation_feedback"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    recommendation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "recommendations.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+
+    feedback_type: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+    )
+
+    comment: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    created_at: Mapped[object] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+    recommendation: Mapped["Recommendation"] = relationship(
+        "Recommendation",
+        back_populates="feedback_entries",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "feedback_type IN "
+            "('helpful', 'not_helpful', 'irrelevant')",
+            name="ck_recommendation_feedback_valid_type",
+        ),
+
+        UniqueConstraint(
+            "recommendation_id",
+            name="uq_recommendation_feedback_recommendation_id",
+        ),
+
+        Index(
+            "ix_recommendation_feedback_recommendation_id",
+            "recommendation_id",
+        ),
+
+        Index(
+            "ix_recommendation_feedback_feedback_type",
+            "feedback_type",
+        ),
+
+        Index(
+            "ix_recommendation_feedback_created_at",
+            "created_at",
+        ),
+    )
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("id", uuid.uuid4())
+        super().__init__(**kwargs)
+
+    def __repr__(self):
+        return (
+            f"<RecommendationFeedback("
+            f"id={self.id}, "
+            f"recommendation_id={self.recommendation_id}, "
+            f"feedback_type={self.feedback_type}"
+            f")>"
+        )
+
+
+========== resource_category.py ==========
+
+from datetime import datetime
+from uuid import UUID, uuid4
+
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database.base import Base
+
+
+class ResourceCategory(Base):
+    __tablename__ = "resource_categories"
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+
+    name: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+    )
+
+    slug: Mapped[str] = mapped_column(
+        String(120),
+        nullable=False,
+    )
+
+    description: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    parent_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(
+            "resource_categories.id",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
+
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    parent: Mapped["ResourceCategory | None"] = relationship(
+        "ResourceCategory",
+        remote_side="ResourceCategory.id",
+        back_populates="children",
+    )
+
+    children: Mapped[list["ResourceCategory"]] = relationship(
+        "ResourceCategory",
+        back_populates="parent",
+    )
+
+    study_resources = relationship(
+        "StudyResource",
+        secondary="study_resource_categories",
+        back_populates="categories",
+         passive_deletes=True,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "name",
+            name="uq_resource_categories_name",
+        ),
+        UniqueConstraint(
+            "slug",
+            name="uq_resource_categories_slug",
+        ),
+        CheckConstraint(
+            "length(trim(name)) > 0",
+            name="ck_resource_categories_name_nonempty",
+        ),
+        CheckConstraint(
+            "length(trim(slug)) > 0",
+            name="ck_resource_categories_slug_nonempty",
+        ),
+        CheckConstraint(
+            "slug = lower(slug)",
+            name="ck_resource_categories_slug_lowercase",
+        ),
+        CheckConstraint(
+            "parent_id IS NULL OR parent_id <> id",
+            name="ck_resource_categories_no_self_parent",
+        ),
+        Index(
+            "ix_resource_categories_parent_id",
+            "parent_id",
+        ),
+        Index(
+            "ix_resource_categories_is_active",
+            "is_active",
+        ),
+        Index(
+            "ix_resource_categories_name",
+            "name",
+        ),
+    )
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("id", uuid4())
+        kwargs.setdefault("is_active", True)
+        super().__init__(**kwargs)
+
+    def __repr__(self) -> str:
+        return (
+            f"<ResourceCategory("
+            f"id={self.id}, "
+            f"name={self.name!r}, "
+            f"slug={self.slug!r})>"
+        )
+
+
+========== study_resource.py ==========
+
+
+from datetime import datetime
+from decimal import Decimal
+from uuid import UUID, uuid4
+
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.ext.mutable import MutableDict
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database.base import Base
+
+
+class StudyResource(Base):
+    __tablename__ = "study_resources"
+
+    # Primary Key
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+
+    # Basic Resource Information
+    title: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    description: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    resource_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+    )
+
+    url: Mapped[str] = mapped_column(
+        String(2048),
+        nullable=False,
+    )
+
+    # Resource Provider Information
+    provider: Mapped[str | None] = mapped_column(
+        String(150),
+        nullable=True,
+    )
+
+    subject: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    language: Mapped[str | None] = mapped_column(
+        String(30),
+        nullable=True,
+    )
+
+    # Learning Information
+    difficulty_level: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+    )
+
+    estimated_duration_minutes: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    # Resource Quality
+    quality_score: Mapped[Decimal | None] = mapped_column(
+        Numeric(4, 2),
+        nullable=True,
+    )
+
+    # Flexible JSONB Metadata
+    resource_metadata: Mapped[dict] = mapped_column(
+        "metadata",
+        MutableDict.as_mutable(JSONB),
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    # Resource Availability
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+
+    # Timestamps
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # Phase 6.10: Many-to-Many Category Relationship
+    categories: Mapped[list["ResourceCategory"]] = relationship(
+        "ResourceCategory",
+        secondary="study_resource_categories",
+        back_populates="study_resources",
+        passive_deletes=True,
+    )
+
+    # Phase 6.11: User Resource Interactions
+    user_interactions: Mapped[
+        list["UserResourceInteraction"]
+    ] = relationship(
+        "UserResourceInteraction",
+        back_populates="resource",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="UserResourceInteraction.occurred_at",
+    )
+# Recommendations associated with this resource.
+    recommendations: Mapped[
+    list["Recommendation"]
+] = relationship(
+    "Recommendation",
+    back_populates="resource",
+    cascade="all, delete-orphan",
+    passive_deletes=True,
+    order_by="Recommendation.generated_at",
+)
+    # Database Constraints and Indexes
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(title)) > 0",
+            name="ck_study_resources_title_nonempty",
+        ),
+        CheckConstraint(
+            "length(trim(url)) > 0",
+            name="ck_study_resources_url_nonempty",
+        ),
+        CheckConstraint(
+            """
+            resource_type IN (
+                'video',
+                'article',
+                'notes',
+                'course',
+                'documentation',
+                'tutorial',
+                'website',
+                'book'
+            )
+            """,
+            name="ck_study_resources_valid_type",
+        ),
+        CheckConstraint(
+            """
+            difficulty_level IS NULL OR
+            difficulty_level IN (
+                'beginner',
+                'intermediate',
+                'advanced'
+            )
+            """,
+            name="ck_study_resources_valid_difficulty",
+        ),
+        CheckConstraint(
+            """
+            estimated_duration_minutes IS NULL OR
+            estimated_duration_minutes >= 0
+            """,
+            name="ck_study_resources_valid_duration",
+        ),
+        CheckConstraint(
+            """
+            quality_score IS NULL OR
+            (quality_score >= 0 AND quality_score <= 5)
+            """,
+            name="ck_study_resources_valid_quality",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(metadata) = 'object'",
+            name="ck_study_resources_metadata_object",
+        ),
+
+        # Individual Indexes
+        Index(
+            "ix_study_resources_resource_type",
+            "resource_type",
+        ),
+        Index(
+            "ix_study_resources_subject",
+            "subject",
+        ),
+        Index(
+            "ix_study_resources_language",
+            "language",
+        ),
+        Index(
+            "ix_study_resources_difficulty",
+            "difficulty_level",
+        ),
+        Index(
+            "ix_study_resources_is_active",
+            "is_active",
+        ),
+        Index(
+            "ix_study_resources_quality_score",
+            "quality_score",
+        ),
+        Index(
+            "ix_study_resources_created_at",
+            "created_at",
+        ),
+
+        # Composite Index
+        Index(
+            "ix_study_resources_subject_type_active",
+            "subject",
+            "resource_type",
+            "is_active",
+        ),
+    )
+
+    # Initialize Python-side defaults immediately
+    def __init__(self, **kwargs):
+        kwargs.setdefault("id", uuid4())
+        kwargs.setdefault("resource_metadata", {})
+        kwargs.setdefault("is_active", True)
+
+        super().__init__(**kwargs)
+
+    # String Representation
+    def __repr__(self) -> str:
+        return (
+            f"<StudyResource("
+            f"id={self.id}, "
+            f"title={self.title!r}, "
+            f"resource_type={self.resource_type!r})>"
+        )
+
+
+
+
+========== study_resource_category.py ==========
+
+from datetime import datetime
+
+from sqlalchemy import (
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Table,
+    func,
+)
+
+from app.database.base import Base
+
+
+study_resource_categories = Table(
+    "study_resource_categories",
+    Base.metadata,
+
+    Column(
+        "resource_id",
+        ForeignKey(
+            "study_resources.id",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    ),
+
+    Column(
+        "category_id",
+        ForeignKey(
+            "resource_categories.id",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    ),
+
+    Column(
+        "assigned_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
+
+    Index(
+        "ix_study_resource_categories_category_id",
+        "category_id",
+    ),
+)
+
+
+========== user.py ==========
+
+
+import uuid
+
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Index,
+    String,
+    UniqueConstraint,
+    func,
+)
+
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database.base import Base
+
+
+class User(Base):
+    """
+    Represents a registered ScholarAI user.
+    """
+
+    __tablename__ = "users"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "email",
+            name="uq_users_email",
+        ),
+        Index(
+            "ix_users_email",
+            "email",
+        ),
+    )
+
+    # Primary key.
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=lambda: uuid.uuid4(),
+    )
+
+    # User's full name.
+    full_name: Mapped[str] = mapped_column(
+        String(150),
+        nullable=False,
+    )
+
+    # Email address.
+    email: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    # Account activation status.
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default="true",
+    )
+
+    # Account creation timestamp.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+    # Last account update timestamp.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+    # Conversations owned by this user.
+    conversations: Mapped[list["Conversation"]] = relationship(
+        "Conversation",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    # One-to-one user preferences relationship.
+    preferences: Mapped["UserPreferences | None"] = relationship(
+        "UserPreferences",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+    )
+
+    # Documents uploaded by this user.
+    documents: Mapped[list["Document"]] = relationship(
+        "Document",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    # Learning activities performed by this user.
+    learning_activities: Mapped[list["LearningActivity"]] = relationship(
+        "LearningActivity",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="LearningActivity.occurred_at",
+    )
+
+    # Resource interactions performed by this user.
+    resource_interactions: Mapped[
+        list["UserResourceInteraction"]
+    ] = relationship(
+        "UserResourceInteraction",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="UserResourceInteraction.occurred_at",
+    )
+        # Recommendations generated for this user.
+    recommendations: Mapped[
+    list["Recommendation"]
+] = relationship(
+    "Recommendation",
+    back_populates="user",
+    cascade="all, delete-orphan",
+    passive_deletes=True,
+    order_by="Recommendation.generated_at",
+)
+    
+
+    def __repr__(self) -> str:
+        return (
+            f"<User(id={self.id}, "
+            f"email='{self.email}', "
+            f"is_active={self.is_active})>"
+        )
+
+
+
+
+========== user_preferences.py ==========
+
+import uuid
+
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    String,
+    UniqueConstraint,
+    func,
+    text,
+)
+
+from sqlalchemy.dialects.postgresql import UUID, JSONB
+
+from sqlalchemy.ext.mutable import MutableList
+
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database.base import Base
+
+
+class UserPreferences(Base):
+    """
+    Stores personalized learning preferences
+    and settings for a ScholarAI user.
+    """
+
+    __tablename__ = "user_preferences"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            name="uq_user_preferences_user_id",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(preferred_subjects) = 'array'",
+            name="ck_user_preferences_subjects_array",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(learning_goals) = 'array'",
+            name="ck_user_preferences_goals_array",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+            name="fk_user_preferences_user_id_users",
+        ),
+        nullable=False,
+    )
+
+    preferred_language: Mapped[str | None] = mapped_column(
+        String(10),
+        nullable=True,
+    )
+
+    education_level: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+
+    preferred_subjects: Mapped[list] = mapped_column(
+        MutableList.as_mutable(JSONB),
+        nullable=False,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+    )
+
+    learning_goals: Mapped[list] = mapped_column(
+        MutableList.as_mutable(JSONB),
+        nullable=False,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+    )
+
+    notification_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+    user: Mapped["User"] = relationship(
+        "User",
+        back_populates="preferences",
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<UserPreferences("
+            f"id={self.id}, "
+            f"user_id={self.user_id}, "
+            f"preferred_language={self.preferred_language!r}"
+            f")>"
+        )
+
+
+========== user_resource_interaction.py ==========
+
+from datetime import datetime
+from uuid import UUID, uuid4
+
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    SmallInteger,
+    String,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.ext.mutable import MutableDict
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database.base import Base
+
+
+class UserResourceInteraction(Base):
+    __tablename__ = "user_resource_interactions"
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+
+    user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    resource_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("study_resources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    interaction_type: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+    )
+
+    rating: Mapped[int | None] = mapped_column(
+        SmallInteger,
+        nullable=True,
+    )
+
+    duration_seconds: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    interaction_metadata: Mapped[dict] = mapped_column(
+        "metadata",
+        MutableDict.as_mutable(JSONB),
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    user: Mapped["User"] = relationship(
+        "User",
+        back_populates="resource_interactions",
+    )
+
+    resource: Mapped["StudyResource"] = relationship(
+        "StudyResource",
+        back_populates="user_interactions",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            """
+            interaction_type IN (
+                'view',
+                'click',
+                'save',
+                'rate',
+                'complete'
+            )
+            """,
+            name="ck_user_resource_interactions_valid_type",
+        ),
+        CheckConstraint(
+            """
+            (
+                interaction_type = 'rate'
+                AND rating IS NOT NULL
+                AND rating BETWEEN 1 AND 5
+            )
+            OR
+            (
+                interaction_type <> 'rate'
+                AND rating IS NULL
+            )
+            """,
+            name="ck_user_resource_interactions_valid_rating",
+        ),
+        CheckConstraint(
+            """
+            duration_seconds IS NULL
+            OR duration_seconds >= 0
+            """,
+            name="ck_user_resource_interactions_valid_duration",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(metadata) = 'object'",
+            name="ck_user_resource_interactions_metadata_object",
+        ),
+        Index(
+            "ix_user_resource_interactions_user_id",
+            "user_id",
+        ),
+        Index(
+            "ix_user_resource_interactions_resource_id",
+            "resource_id",
+        ),
+        Index(
+            "ix_user_resource_interactions_interaction_type",
+            "interaction_type",
+        ),
+        Index(
+            "ix_user_resource_interactions_occurred_at",
+            "occurred_at",
+        ),
+        Index(
+            "ix_user_resource_interactions_user_occurred",
+            "user_id",
+            "occurred_at",
+        ),
+        Index(
+            "ix_user_resource_interactions_user_resource",
+            "user_id",
+            "resource_id",
+        ),
+    )
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("id", uuid4())
+        kwargs.setdefault("interaction_metadata", {})
+
+        super().__init__(**kwargs)
+
+    def __repr__(self) -> str:
+        return (
+            f"<UserResourceInteraction("
+            f"id={self.id}, "
+            f"user_id={self.user_id}, "
+            f"resource_id={self.resource_id}, "
+            f"interaction_type={self.interaction_type!r})>"
+        )
+
+
+========== __init__.py ==========
+
+from app.models.user import User
+from app.models.conversation import Conversation
+from app.models.message import Message
+from app.models.user_preferences import UserPreferences
+from app.models.document import Document
+from app.models.learning_activity import LearningActivity
+from app.models.study_resource import StudyResource
+from app.models.resource_category import ResourceCategory
+from app.models.study_resource_category import study_resource_categories
+from app.models.user_resource_interaction import UserResourceInteraction
+from app.models.recommendation import Recommendation
+from app.models.recommendation_feedback import RecommendationFeedback
+
+
+__all__ = [
+    "User",
+    "Conversation",
+    "Message",
+    "UserPreferences",
+    "Document",
+    "LearningActivity",
+    "StudyResource",
+    "ResourceCategory",
+    "study_resource_categories",
+    "UserResourceInteraction",
+    "Recommendation",
+    "RecommendationFeedback",
+]
+from logging.config import fileConfig
+from pathlib import Path
+import sys
+
+from alembic import context
+from sqlalchemy import create_engine, pool
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.core.config import settings
+from app.database.base import Base
+
+# Import all models to register their metadata.
+import app.models
+
+config = context.config
+
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+target_metadata = Base.metadata
+
+MODEL_TABLES = {
+    "users",
+    "conversations",
+    "messages",
+    "user_preferences",
+    "documents"
+    "learning_activities",
+     "study_resources",
+     "resource_categories",
+    "study_resource_categories",
+    "user_resource_interactions",
+    "recommendations",
+    "recommendation_feedback",
+}
+
+
+def include_name(name, type_, parent_names):
+    """
+    Restrict reflected database tables to registered ScholarAI models.
+    """
+
+    if type_ == "table":
+        return name in MODEL_TABLES
+
+    return True
+
+
+def include_object(object, name, type_, reflected, compare_to):
+    """
+    Include only registered ScholarAI model tables.
+    """
+
+    if type_ == "table":
+        return name in MODEL_TABLES
+
+    return True
+
+
+def run_migrations_offline():
+    database_url = settings.DATABASE_URL
+
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is missing from .env")
+
+    context.configure(
+        url=database_url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+        compare_type=True,
+        compare_server_default=True,
+        include_name=include_name,
+        include_object=include_object,
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_migrations_online():
+    database_url = settings.DATABASE_URL
+
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is missing from .env")
+
+    connectable = create_engine(
+        database_url,
+        poolclass=pool.NullPool,
+    )
+
+    try:
+        with connectable.connect() as connection:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                compare_type=True,
+                compare_server_default=True,
+                include_name=include_name,
+                include_object=include_object,
+            )
+
+            with context.begin_transaction():
+                context.run_migrations()
+
+    finally:
+        connectable.dispose()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()

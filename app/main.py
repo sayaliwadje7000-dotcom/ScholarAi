@@ -1,8 +1,12 @@
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.chat import router as chat_router
 from app.core.config import settings
+from app.database.session import engine, get_db
 
 
 app = FastAPI(
@@ -36,7 +40,30 @@ def home():
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+    }
+
+
+@app.get("/health/database")
+def database_health_check():
+    """
+    Checks whether PostgreSQL is reachable.
+    """
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+
+        return {
+            "status": "healthy",
+            "database": "connected",
+        }
+
+    except SQLAlchemyError:
+        return {
+            "status": "unhealthy",
+            "database": "disconnected",
+        }
 
 
 app.include_router(
@@ -44,3 +71,4 @@ app.include_router(
     prefix="/api/v1",
     tags=["Chat"],
 )
+

@@ -1,3 +1,4 @@
+
 from collections.abc import Generator
 
 from sqlalchemy import create_engine
@@ -32,12 +33,18 @@ def get_db() -> Generator[Session, None, None]:
     """
     Provides a database session to API endpoints.
 
-    Automatically closes the session after use.
+    Automatically rolls back unfinished transactions on errors
+    and closes the session after use.
     """
-
     db = SessionLocal()
 
     try:
         yield db
+
+    except Exception:
+        db.rollback()
+        raise
+
     finally:
         db.close()
+

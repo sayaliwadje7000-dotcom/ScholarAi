@@ -33,6 +33,7 @@ MODEL_TABLES = {
      "study_resources",
      "resource_categories",
     "study_resource_categories",
+    "user_resource_interactions",
 }
 
 

@@ -1,3 +1,4 @@
+
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -126,7 +127,18 @@ class StudyResource(Base):
         "ResourceCategory",
         secondary="study_resource_categories",
         back_populates="study_resources",
-         passive_deletes=True,
+        passive_deletes=True,
+    )
+
+    # Phase 6.11: User Resource Interactions
+    user_interactions: Mapped[
+        list["UserResourceInteraction"]
+    ] = relationship(
+        "UserResourceInteraction",
+        back_populates="resource",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="UserResourceInteraction.occurred_at",
     )
 
     # Database Constraints and Indexes
@@ -239,3 +251,4 @@ class StudyResource(Base):
             f"title={self.title!r}, "
             f"resource_type={self.resource_type!r})>"
         )
+

@@ -1,3 +1,4 @@
+
 import uuid
 
 from datetime import datetime, timezone
@@ -39,7 +40,7 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
-        default=lambda context: uuid.uuid4(),
+        default=lambda: uuid.uuid4(),
     )
 
     # User's full name.
@@ -103,17 +104,31 @@ class User(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
-# Learning activities performed by this user.
+
+    # Learning activities performed by this user.
     learning_activities: Mapped[list["LearningActivity"]] = relationship(
-    "LearningActivity",
-    back_populates="user",
-    cascade="all, delete-orphan",
-    passive_deletes=True,
-    order_by="LearningActivity.occurred_at",
+        "LearningActivity",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="LearningActivity.occurred_at",
     )
+
+    # Resource interactions performed by this user.
+    resource_interactions: Mapped[
+        list["UserResourceInteraction"]
+    ] = relationship(
+        "UserResourceInteraction",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="UserResourceInteraction.occurred_at",
+    )
+
     def __repr__(self) -> str:
         return (
             f"<User(id={self.id}, "
             f"email='{self.email}', "
             f"is_active={self.is_active})>"
         )
+

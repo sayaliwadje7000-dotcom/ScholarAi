@@ -31,3 +31,11 @@ Thumbs.db
 
 *.phase3-backup
 *.phase5-backup
+# ============================================================
+# SCHOLARAI DOCUMENT STORAGE
+# ============================================================
+
+storage/
+
+# Uploaded PDF files
+*.pdf

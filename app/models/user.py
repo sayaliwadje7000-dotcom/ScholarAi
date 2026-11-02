@@ -124,6 +124,17 @@ class User(Base):
         passive_deletes=True,
         order_by="UserResourceInteraction.occurred_at",
     )
+        # Recommendations generated for this user.
+    recommendations: Mapped[
+    list["Recommendation"]
+] = relationship(
+    "Recommendation",
+    back_populates="user",
+    cascade="all, delete-orphan",
+    passive_deletes=True,
+    order_by="Recommendation.generated_at",
+)
+    
 
     def __repr__(self) -> str:
         return (

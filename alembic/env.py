@@ -34,6 +34,8 @@ MODEL_TABLES = {
      "resource_categories",
     "study_resource_categories",
     "user_resource_interactions",
+    "recommendations",
+    "recommendation_feedback",
 }
 
 

@@ -8,6 +8,8 @@ from app.models.study_resource import StudyResource
 from app.models.resource_category import ResourceCategory
 from app.models.study_resource_category import study_resource_categories
 from app.models.user_resource_interaction import UserResourceInteraction
+from app.models.recommendation import Recommendation
+from app.models.recommendation_feedback import RecommendationFeedback
 
 
 __all__ = [
@@ -21,4 +23,6 @@ __all__ = [
     "ResourceCategory",
     "study_resource_categories",
     "UserResourceInteraction",
+    "Recommendation",
+    "RecommendationFeedback",
 ]

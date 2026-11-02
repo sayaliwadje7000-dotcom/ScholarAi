@@ -140,7 +140,16 @@ class StudyResource(Base):
         passive_deletes=True,
         order_by="UserResourceInteraction.occurred_at",
     )
-
+# Recommendations associated with this resource.
+    recommendations: Mapped[
+    list["Recommendation"]
+] = relationship(
+    "Recommendation",
+    back_populates="resource",
+    cascade="all, delete-orphan",
+    passive_deletes=True,
+    order_by="Recommendation.generated_at",
+)
     # Database Constraints and Indexes
     __table_args__ = (
         CheckConstraint(

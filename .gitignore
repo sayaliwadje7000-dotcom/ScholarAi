@@ -1,28 +1,33 @@
 # Python bytecode and caches
-__pycache__/
+
+**pycache**/
 *.py[cod]
 *.egg-info/
 
 # Virtual environments
+
 .venv/
 venv/
 
 # Environment variables and secrets
+
 .env
 .env.*
 !.env.example
 
 # Testing and coverage
+
 .pytest_cache/
 .coverage
 htmlcov/
 
 # Editor and operating-system files
+
 .vscode/
 .DS_Store
 Thumbs.db
 
-.env
 # Local development backups
+
 *.phase3-backup
 *.phase5-backup

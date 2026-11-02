@@ -1,5 +1,9 @@
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 class Settings:
     """Central configuration for the ScholarAI backend."""
@@ -22,6 +26,9 @@ class Settings:
     BACKEND_PORT: int = int(
         os.getenv("SCHOLARAI_BACKEND_PORT", "8000")
     )
+
+    # PostgreSQL database.
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 
 
 settings = Settings()

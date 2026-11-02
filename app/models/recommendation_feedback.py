@@ -1,34 +1,32 @@
-from datetime import datetime
-from uuid import UUID, uuid4
+import uuid
 
 from sqlalchemy import (
     CheckConstraint,
-    DateTime,
     ForeignKey,
     Index,
     String,
     Text,
+    TIMESTAMP,
     UniqueConstraint,
-    func,
+    text,
 )
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
 
 
 class RecommendationFeedback(Base):
-
     __tablename__ = "recommendation_feedback"
 
-    id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
         primary_key=True,
-        default=uuid4,
+        default=uuid.uuid4,
     )
 
-    recommendation_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+    recommendation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
         ForeignKey(
             "recommendations.id",
             ondelete="CASCADE",
@@ -46,10 +44,10 @@ class RecommendationFeedback(Base):
         nullable=True,
     )
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+    created_at: Mapped[object] = mapped_column(
+        TIMESTAMP(timezone=True),
         nullable=False,
-        server_default=func.now(),
+        server_default=text("CURRENT_TIMESTAMP"),
     )
 
     recommendation: Mapped["Recommendation"] = relationship(
@@ -58,21 +56,15 @@ class RecommendationFeedback(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "feedback_type IN "
+            "('helpful', 'not_helpful', 'irrelevant')",
+            name="ck_recommendation_feedback_valid_type",
+        ),
 
         UniqueConstraint(
             "recommendation_id",
-            name="uq_recommendation_feedback_recommendation",
-        ),
-
-        CheckConstraint(
-            """
-            feedback_type IN (
-                'helpful',
-                'not_helpful',
-                'irrelevant'
-            )
-            """,
-            name="ck_recommendation_feedback_valid_type",
+            name="uq_recommendation_feedback_recommendation_id",
         ),
 
         Index(
@@ -92,14 +84,14 @@ class RecommendationFeedback(Base):
     )
 
     def __init__(self, **kwargs):
-        kwargs.setdefault("id", uuid4())
-
+        kwargs.setdefault("id", uuid.uuid4())
         super().__init__(**kwargs)
 
-    def __repr__(self) -> str:
+    def __repr__(self):
         return (
             f"<RecommendationFeedback("
             f"id={self.id}, "
             f"recommendation_id={self.recommendation_id}, "
-            f"feedback_type={self.feedback_type!r})>"
+            f"feedback_type={self.feedback_type}"
+            f")>"
         )

@@ -12,7 +12,7 @@ for retrieval-augmented generation.
 
 ## 7.1 — Document Processing Infrastructure
 
-Status: Implementation pending verification.
+Status: complete and verified
 
 ### Dependencies
 
@@ -47,20 +47,82 @@ storage/
 
 ## Future Subphases
 
-7.2 — PDF Upload and Validation
+## Completed Subphases
 
-7.3 — PDF Text Extraction
+| Subphase | Description | Status |
+|---|---|---|
+| 7.1 | Document Processing Infrastructure | Complete |
+| 7.2 | PDF Upload and Validation | Complete |
+| 7.3 | PDF Text Extraction | Complete |
+| 7.4 | OCR and Scanned Document Processing | Complete |
+| 7.5 | Unified Document Processing Pipeline | Complete |
+| 7.6 | Document Structure Extraction | Complete |
+| 7.7 | Document Text Cleaning and Normalization | Complete |
 
-7.4 — OCR and Scanned Document Processing
+## Upcoming Subphases
 
-7.5 — Document Upload API and Database Integration
+### 7.8 – Processing Status and Failure Recovery
+### 7.9 – Document Text Normalization
+### 7.10 – Document Chunking and Chunk Metadata
+---
 
-7.6 — Document Retrieval and Metadata API
+## 7.2 — PDF Upload and Validation
 
-7.7 — Document Ownership and Access Validation
+### Objective
 
-7.8 — Processing Status and Failure Recovery
+Implement secure validation and storage of PDF documents.
 
-7.9 — Document Text Normalization
+### Implemented Components
 
-7.10 — Document Chunking and Chunk Metadata
+- Filename sanitization
+- File-size validation
+- MIME type validation
+- PDF signature validation
+- PDF structural validation
+- Encrypted PDF rejection
+- Zero-page PDF rejection
+- Maximum page count validation
+- SHA-256 checksum generation
+- UUID-based storage identifiers
+- Atomic file writes
+- Safe storage path resolution
+- Document retrieval
+- Document deletion
+
+### Security Measures
+
+- User filenames are not used as physical storage paths.
+- Windows and POSIX path traversal attempts are rejected.
+- PDF content is parsed rather than trusting MIME type.
+- File-size and page-count limits are enforced.
+- Files are written atomically.
+- Storage paths are constrained to the configured storage root.
+
+### Testing
+
+- Filename validation
+- File-size validation
+- MIME validation
+- PDF signature validation
+- PDF structure validation
+- Encryption rejection
+- Page-count validation
+- Checksum validation
+- Storage and retrieval
+- Deletion
+- Path traversal protection
+
+### Architectural Boundary
+
+This subphase implements the storage service.
+
+It does not yet implement:
+
+- FastAPI upload endpoint
+- Database persistence
+- PDF text extraction
+- OCR
+- Document chunking
+- Vector embeddings
+
+These are handled by subsequent subphases.

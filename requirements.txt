@@ -9,3 +9,5 @@ python-dotenv>=1.0,<2.0
 # Phase 7 - Document Processing
 python-multipart
 PyMuPDF
+pytesseract
+Pillow

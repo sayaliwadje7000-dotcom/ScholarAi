@@ -228,3 +228,109 @@ Phase 7.12 is complete after:
 4. PostgreSQL integration test passing.
 5. Documentation updated.
 6. Git changes reviewed and committed.
+
+## Phase 7.13 — Document Processing Status Management
+
+### Objective
+
+Establish a centralized document processing status lifecycle for ScholarAI.
+
+The status-management system tracks processing progress, timestamps, failures, and retry attempts.
+
+### Supported Processing States
+
+- pending
+- processing
+- completed
+- failed
+
+### Permitted Transitions
+
+- pending → processing
+- processing → completed
+- processing → failed
+- failed → processing
+
+Completed documents cannot be restarted through the normal processing workflow.
+
+### Implemented Components
+
+- Centralized status definitions.
+- Status validation.
+- Explicit transition validation.
+- PostgreSQL row locking during status transitions.
+- UTC processing timestamps.
+- Processing attempt tracking.
+- Failure descriptions.
+- Completed page-count updates.
+- Status retrieval.
+- Retry eligibility checks.
+- Database transaction rollback.
+- Status-management unit tests.
+- Opt-in PostgreSQL integration tests.
+
+### Timestamp Management
+
+When processing starts:
+
+- processing_started_at is updated.
+- processing_completed_at is cleared.
+- processing_error is cleared.
+- processing_attempts is incremented.
+
+When processing completes:
+
+- processing_completed_at is updated.
+- processing_error is cleared.
+- page_count is updated when supplied.
+
+When processing fails:
+
+- processing_completed_at is updated.
+- processing_error records a bounded failure description.
+
+### Concurrency
+
+The centralized status-management service uses SELECT FOR UPDATE to acquire a database row lock before validating and applying a status transition.
+
+This protects concurrent transitions when used within PostgreSQL transactions.
+
+### Retry Management
+
+Failed documents may return to processing.
+
+A retry increments the processing attempt count and resets the previous attempt's timestamps and error information.
+
+### Testing
+
+Unit tests cover:
+
+- Status definitions.
+- Valid transitions.
+- Invalid transitions.
+- Processing initialization.
+- Completion.
+- Failure.
+- Retry eligibility.
+- Attempt counting.
+- Timestamp handling.
+- Missing documents.
+- Database rollback.
+- Status retrieval.
+
+PostgreSQL integration tests verify real status persistence.
+
+### Architectural Boundary
+
+The existing document processing pipeline already manages its processing lifecycle.
+
+The new status-management service provides a centralized reusable transition mechanism. Full orchestration and retry execution remain separate responsibilities for subsequent processing and error-recovery work.
+
+### Completion Criteria
+
+1. Status-management service implemented.
+2. Unit tests passing.
+3. Existing document processing tests passing.
+4. PostgreSQL integration tests passing.
+5. Documentation updated.
+6. Git checkpoint created.

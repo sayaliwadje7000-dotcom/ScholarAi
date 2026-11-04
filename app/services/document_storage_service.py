@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import logging
 import os
 import re
@@ -6,8 +7,7 @@ import unicodedata
 import uuid
 
 from dataclasses import dataclass
-from pathlib import Path, PureWindowsPath
-
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import pymupdf as fitz
 from app.core.document_config import (
     DocumentSettings,
@@ -276,6 +276,66 @@ def calculate_sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def verify_document_checksum(
+    storage_key: str,
+    expected_checksum: str,
+    settings: DocumentSettings = document_settings,
+) -> bool:
+    """
+    Verify the SHA-256 checksum of a stored document.
+
+    Reads the document in chunks to avoid loading the entire file
+    into memory.
+
+    Returns True when the stored document matches the expected checksum.
+
+    Raises:
+        DocumentValidationError: If the expected checksum is invalid.
+        DocumentStorageError: If the document cannot be accessed.
+        DocumentIntegrityError: If the checksum does not match.
+    """
+
+    if (
+        not isinstance(expected_checksum, str)
+        or not re.fullmatch(r"[a-fA-F0-9]{64}", expected_checksum)
+    ):
+        raise DocumentValidationError(
+            "A valid SHA-256 checksum is required."
+        )
+
+    path = get_document_path(
+        storage_key,
+        settings,
+    )
+
+    digest = hashlib.sha256()
+
+    try:
+        with path.open("rb") as file:
+            while True:
+                chunk = file.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+
+    except OSError as exc:
+        raise DocumentStorageError(
+            "Unable to read the stored document for integrity verification."
+        ) from exc
+
+    actual_checksum = digest.hexdigest()
+
+    if not hmac.compare_digest(
+        actual_checksum,
+        expected_checksum.lower(),
+    ):
+        raise DocumentIntegrityError(
+            "Stored document integrity verification failed."
+        )
+
+    return True
+
+
 # ============================================================
 # STORAGE PATH RESOLUTION
 # ============================================================
@@ -287,8 +347,15 @@ def resolve_storage_path(
     """
     Resolve a storage key safely.
 
-    Reject absolute paths, traversal and paths escaping
-    the configured storage root.
+    Reject:
+    - Absolute paths
+    - Windows drive paths
+    - POSIX and Windows traversal
+    - Null bytes
+    - Paths escaping the configured storage root
+    - Symlink resolutions outside the storage root
+
+    Storage keys use POSIX-style separators.
     """
 
     if not isinstance(storage_key, str) or not storage_key:
@@ -301,31 +368,49 @@ def resolve_storage_path(
             "Invalid storage key."
         )
 
-    # Reject Windows absolute paths even on other platforms.
-    windows_path = PureWindowsPath(storage_key)
+    normalized_key = storage_key.replace("\\", "/")
+
+    windows_path = PureWindowsPath(normalized_key)
+    posix_path = PurePosixPath(normalized_key)
 
     if (
-        Path(storage_key).is_absolute()
+        Path(normalized_key).is_absolute()
         or windows_path.is_absolute()
         or windows_path.drive
+        or posix_path.is_absolute()
+        or ".." in posix_path.parts
+        or ".." in windows_path.parts
     ):
         raise DocumentStorageError(
-            "Absolute storage paths are not allowed."
+            "Unsafe storage paths are not allowed."
         )
 
-    root = settings.storage_root.resolve()
-
-    destination = (
-        root / storage_key
-    ).resolve()
-
-    if not destination.is_relative_to(root):
+    if not posix_path.parts:
         raise DocumentStorageError(
-            "The storage path escapes the document storage root."
+            "A valid storage key is required."
         )
 
-    return destination
+    try:
+        root = settings.storage_root.resolve()
 
+        destination = root.joinpath(
+            *posix_path.parts
+        ).resolve()
+
+        if not destination.is_relative_to(root):
+            raise DocumentStorageError(
+                "The storage path escapes the document storage root."
+            )
+
+        return destination
+
+    except DocumentStorageError:
+        raise
+
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise DocumentStorageError(
+            "Unable to safely resolve the document storage path."
+        ) from exc
 
 # ============================================================
 # ATOMIC FILE WRITING
@@ -336,11 +421,13 @@ def _write_file_atomically(
     content: bytes,
 ) -> None:
     """
-    Write content to a unique temporary file and atomically
-    move it to its final destination.
+    Write content to a unique temporary file.
 
-    Temporary files are created in the same directory
-    to keep the replacement on the same filesystem.
+    Publish the completed file using an atomic hard-link
+    operation so an existing destination cannot be overwritten.
+
+    The temporary file and destination must be on the same
+    filesystem.
     """
 
     temporary_path = destination.with_name(
@@ -369,37 +456,49 @@ def _write_file_atomically(
             file_descriptor = None
 
             file.write(content)
-
             file.flush()
-
             os.fsync(file.fileno())
 
-        # Generated UUID filenames make collisions extremely
-        # unlikely. The destination must not already exist.
-        if destination.exists():
-            raise FileExistsError(
-                "The generated document path already exists."
-            )
-
-        os.replace(
+        # Atomic publication without replacing an existing file.
+        # os.link fails if destination already exists.
+        os.link(
             temporary_path,
             destination,
         )
 
-    except Exception as exc:
-
-        if file_descriptor is not None:
-            os.close(file_descriptor)
-
-        temporary_path.unlink(
-            missing_ok=True
-        )
-
+    except FileExistsError as exc:
         raise DocumentStorageWriteError(
-            "Unable to store the uploaded document."
+            "The destination document already exists."
         ) from exc
 
+    except OSError as exc:
+        raise DocumentStorageWriteError(
+            "Unable to store the uploaded document safely."
+        ) from exc
 
+    except Exception as exc:
+        raise DocumentStorageWriteError(
+            "Unexpected error while storing the uploaded document."
+        ) from exc
+
+    finally:
+        if file_descriptor is not None:
+            try:
+                os.close(file_descriptor)
+            except OSError:
+                logger.exception(
+                    "Unable to close temporary storage file descriptor."
+                )
+
+        try:
+            temporary_path.unlink(
+                missing_ok=True
+            )
+        except OSError:
+            logger.exception(
+                "Unable to remove temporary storage file: %s",
+                temporary_path,
+            )
 # ============================================================
 # DOCUMENT STORAGE
 # ============================================================

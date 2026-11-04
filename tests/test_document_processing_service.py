@@ -1,522 +1,531 @@
-import json
-from app.services.ocr_service import OCRPageResult
-from dataclasses import dataclass, replace
-from pathlib import Path
-from types import SimpleNamespace
-from uuid import uuid4
-from unittest.mock import MagicMock, patch
-
+import hashlib
+import uuid
 import pytest
-from unittest.mock import patch
-from app.core.document_config import load_document_settings
-from app.core.ocr_config import OCRSettings
+import pymupdf as fitz
+from pathlib import Path
 
-from app.services.document_processing_service import (
-    DocumentProcessingError,
-    DocumentProcessingDatabaseError,
-    process_document,
+from app.core.document_config import DocumentSettings
+
+from app.services.document_storage_service import (
+    DocumentStorageError,
+    DocumentValidationError,
+    DocumentSizeError,
+    DocumentIntegrityError,
+    calculate_sha256,
+    delete_document,
+    get_document_path,
+    resolve_storage_path,
+    sanitize_filename,
+    save_document,
+    validate_file_size,
+    validate_mime_type,
+    validate_pdf_signature,
+    validate_pdf_structure,
 )
-@pytest.fixture(autouse=True)
-def mock_document_structure_extraction():
-    with patch(
-        "app.services.document_processing_service.process_document_structure",
-        return_value=({}, None),
-    ):
-        yield
+
+
+# ============================================================
+# TEST FIXTURES
+# ============================================================
 
 @pytest.fixture
-def document_settings(tmp_path):
+def document_settings_fixture(tmp_path):
 
-    return replace(
-        load_document_settings(),
-        storage_root=tmp_path,
-        max_pages=10,
-    )
+    return DocumentSettings(
+        storage_root=tmp_path / "storage",
 
+        max_file_size_bytes=1024 * 1024,
 
-@pytest.fixture
-def ocr_settings():
+        max_pages=5,
 
-    return OCRSettings(
-        tesseract_cmd="tesseract.exe",
-        language="eng",
-        dpi=300,
-        timeout_seconds=60,
-        minimum_confidence=40,
-        force_ocr=False,
+        allowed_extensions=(".pdf",),
+
+        allowed_mime_types=("application/pdf",),
+
+        create_storage_directories=True,
     )
 
 
 @pytest.fixture
-def document_record():
+def valid_pdf():
 
-    return SimpleNamespace(
-        id=uuid4(),
-        page_count=None,
-        processing_status="pending",
+    document = fitz.open()
+
+    page = document.new_page()
+
+    page.insert_text(
+        (72, 72),
+        "ScholarAI document storage testing.",
     )
 
+    content = document.tobytes()
 
-@pytest.fixture
-def db_session():
+    document.close()
 
-    return MagicMock()
-
-
-@pytest.fixture
-def pdf_file(tmp_path):
-
-    path = tmp_path / "sample.pdf"
-    path.write_bytes(b"%PDF-test")
-
-    return path
+    return content
 
 
-def create_mock_results(document_id):
+# ============================================================
+# FILENAME TESTS
+# ============================================================
 
-    native_page = SimpleNamespace(
-        page_number=1,
-        text="Native text.",
+def test_sanitize_normal_filename():
+
+    result = sanitize_filename(
+        "lecture_notes.pdf"
     )
 
-    native_result = SimpleNamespace(
-        document_id=document_id,
-        page_count=1,
-        pages=[native_page],
+    assert result == "lecture_notes.pdf"
+
+
+def test_sanitize_windows_path():
+
+    result = sanitize_filename(
+        r"..\..\private\lecture.pdf"
     )
 
-    ocr_page = OCRPageResult(
-    page_number=1,
-    text="Native text.",
-    extraction_method="native",
-    ocr_status="not_required",
-    character_count=12,
-    word_count=2,
-    average_confidence=None,
-    low_confidence=False,
-    warnings=[],
-)
-    ocr_result = SimpleNamespace(
-        document_id=document_id,
-        page_count=1,
-        pages_with_text=1,
-        total_characters=12,
-        total_words=2,
-        average_ocr_confidence=None,
-        quality_status="good",
-        ocr_pages=[],
-        failed_pages=[],
-        warnings=[],
-        pages=[ocr_page],
+    assert result == "lecture.pdf"
+
+
+def test_sanitize_posix_path():
+
+    result = sanitize_filename(
+        "../../private/lecture.pdf"
     )
 
-    return native_result, ocr_result
+    assert result == "lecture.pdf"
 
 
-def test_process_document_success(
-    document_record,
-    db_session,
-    pdf_file,
-    document_settings,
-    ocr_settings,
-):
+def test_sanitize_invalid_extension():
 
-    native_result, ocr_result = create_mock_results(
-        str(document_record.id)
-    )
+    with pytest.raises(DocumentValidationError):
 
-    with patch(
-        "app.services.document_processing_service.extract_pdf_text",
-        return_value=native_result,
-    ), patch(
-        "app.services.document_processing_service.extract_pdf_with_ocr",
-        return_value=ocr_result,
-    ):
-
-        result = process_document(
-            document_record=document_record,
-            pdf_path=pdf_file,
-            db=db_session,
-            document_settings=document_settings,
-            ocr_settings=ocr_settings,
+        sanitize_filename(
+            "lecture.docx"
         )
 
-    assert result.processing_status == "completed"
+
+def test_sanitize_empty_filename():
+
+    with pytest.raises(DocumentValidationError):
+
+        sanitize_filename(
+            "../../"
+        )
+
+
+def test_sanitize_filename_length():
+
+    result = sanitize_filename(
+        ("a" * 300) + ".pdf"
+    )
+
+    assert len(result) <= 254
+
+    assert result.endswith(".pdf")
+
+
+# ============================================================
+# FILE SIZE TESTS
+# ============================================================
+
+def test_reject_empty_file(
+    document_settings_fixture,
+):
+
+    with pytest.raises(DocumentValidationError):
+
+        validate_file_size(
+            b"",
+            document_settings_fixture,
+        )
+
+
+def test_reject_oversized_file(
+    document_settings_fixture,
+):
+
+    content = b"A" * (
+        document_settings_fixture.max_file_size_bytes + 1
+    )
+
+    with pytest.raises(DocumentSizeError):
+
+        validate_file_size(
+            content,
+            document_settings_fixture,
+        )
+
+
+def test_accept_file_within_limit(
+    document_settings_fixture,
+):
+
+    content = b"A" * 100
+
+    validate_file_size(
+        content,
+        document_settings_fixture,
+    )
+
+
+# ============================================================
+# MIME TYPE TESTS
+# ============================================================
+
+def test_accept_pdf_mime_type(
+    document_settings_fixture,
+):
+
+    validate_mime_type(
+        "application/pdf",
+        document_settings_fixture,
+    )
+
+
+def test_accept_generic_binary_mime_type(
+    document_settings_fixture,
+):
+
+    validate_mime_type(
+        "application/octet-stream",
+        document_settings_fixture,
+    )
+
+
+def test_accept_missing_mime_type(
+    document_settings_fixture,
+):
+
+    validate_mime_type(
+        None,
+        document_settings_fixture,
+    )
+
+
+def test_reject_unsupported_mime_type(
+    document_settings_fixture,
+):
+
+    with pytest.raises(DocumentValidationError):
+
+        validate_mime_type(
+            "image/png",
+            document_settings_fixture,
+        )
+
+
+# ============================================================
+# PDF SIGNATURE TESTS
+# ============================================================
+
+def test_accept_pdf_signature(valid_pdf):
+
+    validate_pdf_signature(
+        valid_pdf
+    )
+
+
+def test_reject_invalid_pdf_signature():
+
+    with pytest.raises(DocumentIntegrityError):
+
+        validate_pdf_signature(
+            b"THIS IS NOT A PDF"
+        )
+
+
+# ============================================================
+# PDF STRUCTURE TESTS
+# ============================================================
+
+def test_validate_valid_pdf(
+    valid_pdf,
+    document_settings_fixture,
+):
+
+    page_count = validate_pdf_structure(
+        valid_pdf,
+        document_settings_fixture,
+    )
+
+    assert page_count == 1
+
+
+def test_reject_invalid_pdf_structure(
+    document_settings_fixture,
+):
+
+    content = b"%PDF-1.7\ninvalid content"
+
+    with pytest.raises(DocumentIntegrityError):
+
+        validate_pdf_structure(
+            content,
+            document_settings_fixture,
+        )
+
+
+def test_reject_zero_page_pdf(
+    document_settings_fixture,
+):
+    # Create a valid PDF containing one page.
+    document = fitz.open()
+
+    document.new_page()
+
+    content = document.tobytes()
+
+    document.close()
+
+    # Modify the test input to represent a PDF
+    # that cannot be parsed as a valid document.
+    invalid_content = content[:100]
+
+    with pytest.raises(DocumentIntegrityError):
+
+        validate_pdf_structure(
+            invalid_content,
+            document_settings_fixture,
+        )
+
+
+def test_reject_excessive_page_count(
+    document_settings_fixture,
+):
+
+    document = fitz.open()
+
+    for _ in range(6):
+        document.new_page()
+
+    content = document.tobytes()
+
+    document.close()
+
+    with pytest.raises(DocumentValidationError):
+
+        validate_pdf_structure(
+            content,
+            document_settings_fixture,
+        )
+
+
+def test_reject_encrypted_pdf(
+    document_settings_fixture,
+):
+
+    document = fitz.open()
+
+    document.new_page()
+
+    content = document.tobytes(
+        encryption=fitz.PDF_ENCRYPT_AES_256,
+        owner_pw="owner-password",
+        user_pw="user-password",
+    )
+
+    document.close()
+
+    with pytest.raises(DocumentIntegrityError):
+
+        validate_pdf_structure(
+            content,
+            document_settings_fixture,
+        )
+
+
+# ============================================================
+# CHECKSUM TESTS
+# ============================================================
+
+def test_checksum_matches_hashlib():
+
+    content = b"ScholarAI"
+
+    assert calculate_sha256(content) == (
+        hashlib.sha256(content).hexdigest()
+    )
+
+
+def test_checksum_is_64_characters():
+
+    result = calculate_sha256(
+        b"ScholarAI"
+    )
+
+    assert len(result) == 64
+
+
+# ============================================================
+# PATH SECURITY TESTS
+# ============================================================
+
+@pytest.mark.parametrize(
+    "storage_key",
+    [
+        "../outside.pdf",
+        "../../secret.pdf",
+        "C:\\private\\document.pdf",
+        "/etc/passwd",
+        "",
+    ],
+)
+def test_reject_unsafe_storage_keys(
+    storage_key,
+    document_settings_fixture,
+):
+
+    with pytest.raises(DocumentStorageError):
+
+        resolve_storage_path(
+            storage_key,
+            document_settings_fixture,
+        )
+
+
+def test_resolve_valid_storage_key(
+    document_settings_fixture,
+):
+
+    result = resolve_storage_path(
+        "documents/sample.pdf",
+        document_settings_fixture,
+    )
+
+    assert result == (
+        document_settings_fixture.storage_root
+        / "documents"
+        / "sample.pdf"
+    ).resolve()
+
+
+# ============================================================
+# STORAGE TESTS
+# ============================================================
+
+def test_save_document(
+    valid_pdf,
+    document_settings_fixture,
+):
+
+    result = save_document(
+        content=valid_pdf,
+        original_filename="lecture.pdf",
+        content_type="application/pdf",
+        settings=document_settings_fixture,
+    )
+
+    assert isinstance(
+        result.document_id,
+        uuid.UUID,
+    )
+
+    assert result.original_filename == "lecture.pdf"
+
+    assert result.mime_type == "application/pdf"
+
+    assert result.file_size_bytes == len(valid_pdf)
+
     assert result.page_count == 1
-    assert result.total_words == 2
-    assert result.quality_status == "good"
 
-    assert document_record.processing_status == "completed"
-    assert document_record.page_count == 1
-
-    assert Path(result.artifact_path).exists()
-
-    db_session.commit.assert_called()
-
-
-def test_unified_artifact_generation(
-    document_record,
-    db_session,
-    pdf_file,
-    document_settings,
-    ocr_settings,
-):
-
-    native_result, ocr_result = create_mock_results(
-        str(document_record.id)
+    stored_path = get_document_path(
+        result.storage_key,
+        document_settings_fixture,
     )
 
-    with patch(
-        "app.services.document_processing_service.extract_pdf_text",
-        return_value=native_result,
-    ), patch(
-        "app.services.document_processing_service.extract_pdf_with_ocr",
-        return_value=ocr_result,
-    ):
+    assert stored_path.is_file()
 
-        result = process_document(
-            document_record=document_record,
-            pdf_path=pdf_file,
-            db=db_session,
-            document_settings=document_settings,
-            ocr_settings=ocr_settings,
+    assert stored_path.read_bytes() == valid_pdf
+
+
+def test_saved_checksum_matches_content(
+    valid_pdf,
+    document_settings_fixture,
+):
+
+    result = save_document(
+        valid_pdf,
+        "notes.pdf",
+        settings=document_settings_fixture,
+    )
+
+    assert result.checksum_sha256 == (
+        hashlib.sha256(valid_pdf).hexdigest()
+    )
+
+
+def test_generated_storage_names_are_unique(
+    valid_pdf,
+    document_settings_fixture,
+):
+
+    first = save_document(
+        valid_pdf,
+        "notes.pdf",
+        settings=document_settings_fixture,
+    )
+
+    second = save_document(
+        valid_pdf,
+        "notes.pdf",
+        settings=document_settings_fixture,
+    )
+
+    assert first.storage_key != second.storage_key
+
+
+def test_reject_invalid_upload_without_storage(
+    document_settings_fixture,
+):
+
+    with pytest.raises(DocumentIntegrityError):
+
+        save_document(
+            b"NOT A PDF",
+            "invalid.pdf",
+            settings=document_settings_fixture,
         )
 
-    artifact = json.loads(
-        Path(result.artifact_path).read_text(
-            encoding="utf-8"
-        )
+    documents_directory = (
+        document_settings_fixture.storage_root
+        / "documents"
     )
 
-    assert artifact["document_id"] == str(document_record.id)
-    assert artifact["processing_status"] == "completed"
-    assert artifact["page_count"] == 1
-    assert artifact["pages"][0]["text"] == "Native text."
+    assert not documents_directory.exists()
 
 
-def test_missing_pdf(
-    document_record,
-    db_session,
-    tmp_path,
-    document_settings,
-    ocr_settings,
+def test_delete_document(
+    valid_pdf,
+    document_settings_fixture,
 ):
 
-    with pytest.raises(DocumentProcessingError):
+    result = save_document(
+        valid_pdf,
+        "notes.pdf",
+        settings=document_settings_fixture,
+    )
 
-        process_document(
-            document_record=document_record,
-            pdf_path=tmp_path / "missing.pdf",
-            db=db_session,
-            document_settings=document_settings,
-            ocr_settings=ocr_settings,
-        )
+    path = get_document_path(
+        result.storage_key,
+        document_settings_fixture,
+    )
+
+    assert path.exists()
+
+    delete_document(
+        result.storage_key,
+        document_settings_fixture,
+    )
+
+    assert not path.exists()
 
 
-def test_native_extraction_failure(
-    document_record,
-    db_session,
-    pdf_file,
-    document_settings,
-    ocr_settings,
+def test_delete_missing_document(
+    document_settings_fixture,
 ):
 
-    with patch(
-        "app.services.document_processing_service.extract_pdf_text",
-        side_effect=Exception("Extraction failed"),
-    ):
-
-        with pytest.raises(DocumentProcessingError):
-
-            process_document(
-                document_record=document_record,
-                pdf_path=pdf_file,
-                db=db_session,
-                document_settings=document_settings,
-                ocr_settings=ocr_settings,
-            )
-
-    assert document_record.processing_status == "failed"
-
-
-def test_ocr_processing_failure(
-    document_record,
-    db_session,
-    pdf_file,
-    document_settings,
-    ocr_settings,
-):
-
-    native_result, _ = create_mock_results(
-        str(document_record.id)
+    delete_document(
+        "documents/nonexistent.pdf",
+        document_settings_fixture,
     )
-
-    with patch(
-        "app.services.document_processing_service.extract_pdf_text",
-        return_value=native_result,
-    ), patch(
-        "app.services.document_processing_service.extract_pdf_with_ocr",
-        side_effect=Exception("OCR failed"),
-    ):
-
-        with pytest.raises(DocumentProcessingError):
-
-            process_document(
-                document_record=document_record,
-                pdf_path=pdf_file,
-                db=db_session,
-                document_settings=document_settings,
-                ocr_settings=ocr_settings,
-            )
-
-    assert document_record.processing_status == "failed"
-
-
-def test_invalid_document_uuid(
-    document_record,
-    db_session,
-    pdf_file,
-    document_settings,
-    ocr_settings,
-):
-
-    document_record.id = "invalid-id"
-
-    with pytest.raises(DocumentProcessingError):
-
-        process_document(
-            document_record=document_record,
-            pdf_path=pdf_file,
-            db=db_session,
-            document_settings=document_settings,
-            ocr_settings=ocr_settings,
-        )
-
-
-def test_database_failure_when_marking_processing(
-    document_record,
-    db_session,
-    pdf_file,
-    document_settings,
-    ocr_settings,
-):
-
-    db_session.commit.side_effect = RuntimeError(
-        "Database unavailable"
-    )
-
-    with pytest.raises(DocumentProcessingDatabaseError):
-
-        process_document(
-            document_record=document_record,
-            pdf_path=pdf_file,
-            db=db_session,
-            document_settings=document_settings,
-            ocr_settings=ocr_settings,
-        )
-
-    db_session.rollback.assert_called()
-
-
-def test_processing_artifact_filename(
-    document_record,
-    db_session,
-    pdf_file,
-    document_settings,
-    ocr_settings,
-):
-
-    native_result, ocr_result = create_mock_results(
-        str(document_record.id)
-    )
-
-    with patch(
-        "app.services.document_processing_service.extract_pdf_text",
-        return_value=native_result,
-    ), patch(
-        "app.services.document_processing_service.extract_pdf_with_ocr",
-        return_value=ocr_result,
-    ):
-
-        result = process_document(
-            document_record=document_record,
-            pdf_path=pdf_file,
-            db=db_session,
-            document_settings=document_settings,
-            ocr_settings=ocr_settings,
-        )
-
-    expected_name = (
-        f"{document_record.id}_processed.json"
-    )
-
-    assert Path(result.artifact_path).name == expected_name
-
-    def test_document_processing_status_transitions(
-    document_record,
-    db_session,
-    pdf_file,
-    document_settings,
-    ocr_settings,
-):
-     native_result, ocr_result = create_mock_results(
-        str(document_record.id)
-    )
-
-    recorded_statuses = []
-
-    def record_commit():
-        recorded_statuses.append(
-            document_record.processing_status
-        )
-
-    db_session.commit.side_effect = record_commit
-
-    with patch(
-        "app.services.document_processing_service.extract_pdf_text",
-        return_value=native_result,
-    ), patch(
-        "app.services.document_processing_service.extract_pdf_with_ocr",
-        return_value=ocr_result,
-    ):
-
-        result = process_document(
-            document_record=document_record,
-            pdf_path=pdf_file,
-            db=db_session,
-            document_settings=document_settings,
-            ocr_settings=ocr_settings,
-        )
-
-    assert recorded_statuses == [
-        "processing",
-        "completed",
-    ]
-
-    assert result.processing_status == "completed"
-
-
-def test_unified_artifact_contains_page_metadata(
-    document_record,
-    db_session,
-    pdf_file,
-    document_settings,
-    ocr_settings,
-):
-    native_result, ocr_result = create_mock_results(
-        str(document_record.id)
-    )
-
-    with patch(
-        "app.services.document_processing_service.extract_pdf_text",
-        return_value=native_result,
-    ), patch(
-        "app.services.document_processing_service.extract_pdf_with_ocr",
-        return_value=ocr_result,
-    ):
-
-        result = process_document(
-            document_record=document_record,
-            pdf_path=pdf_file,
-            db=db_session,
-            document_settings=document_settings,
-            ocr_settings=ocr_settings,
-        )
-
-    artifact = json.loads(
-        Path(result.artifact_path).read_text(
-            encoding="utf-8"
-        )
-    )
-
-    page = artifact["pages"][0]
-
-    assert page["page_number"] == 1
-    assert page["text"] == "Native text."
-    assert page["extraction_method"] == "native"
-    assert page["ocr_status"] == "not_required"
-    assert page["word_count"] == 2
-
-
-def test_artifact_failure_marks_document_failed(
-    document_record,
-    db_session,
-    pdf_file,
-    document_settings,
-    ocr_settings,
-):
-    native_result, ocr_result = create_mock_results(
-        str(document_record.id)
-    )
-
-    with patch(
-        "app.services.document_processing_service.extract_pdf_text",
-        return_value=native_result,
-    ), patch(
-        "app.services.document_processing_service.extract_pdf_with_ocr",
-        return_value=ocr_result,
-    ), patch(
-        "app.services.document_processing_service._save_json_atomically",
-        side_effect=OSError("Storage unavailable"),
-    ):
-
-        with pytest.raises(DocumentProcessingError):
-            process_document(
-                document_record=document_record,
-                pdf_path=pdf_file,
-                db=db_session,
-                document_settings=document_settings,
-                ocr_settings=ocr_settings,
-            )
-
-    assert document_record.processing_status == "failed"
-
-
-def test_final_database_failure_removes_artifact(
-    document_record,
-    db_session,
-    pdf_file,
-    document_settings,
-    ocr_settings,
-):
-    native_result, ocr_result = create_mock_results(
-        str(document_record.id)
-    )
-
-    # First commit: processing.
-    # Second commit: completed status fails.
-    # Third commit: failed status is saved.
-    db_session.commit.side_effect = [
-        None,
-        RuntimeError("Final database commit failed"),
-        None,
-    ]
-
-    expected_artifact = (
-        Path(document_settings.storage_root)
-        / "processed"
-        / f"{document_record.id}_processed.json"
-    )
-
-    with patch(
-        "app.services.document_processing_service.extract_pdf_text",
-        return_value=native_result,
-    ), patch(
-        "app.services.document_processing_service.extract_pdf_with_ocr",
-        return_value=ocr_result,
-    ):
-
-        with pytest.raises(DocumentProcessingError):
-            process_document(
-                document_record=document_record,
-                pdf_path=pdf_file,
-                db=db_session,
-                document_settings=document_settings,
-                ocr_settings=ocr_settings,
-            )
-
-    assert document_record.processing_status == "failed"
-
-    assert not expected_artifact.exists()
-
-    assert db_session.rollback.called

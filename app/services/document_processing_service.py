@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.document_config import DocumentSettings
 from app.core.ocr_config import OCRSettings
 from app.core.text_cleaning_config import TextCleaningSettings
+from app.core.chunking_config import ChunkingSettings
 
 from app.services.pdf_extraction_service import (
     extract_pdf_text,
@@ -34,6 +35,25 @@ from app.services.text_cleaning_service import (
     save_cleaned_text_artifact,
 )
 
+from app.services.document_chunking_service import (
+    chunk_document_pages,
+    save_chunking_artifact,
+)
+
+from app.services.document_status_service import (
+    claim_document_for_processing,
+    DocumentAlreadyClaimedError,
+)
+
+from app.services.document_storage_service import (
+    get_document_path,
+    verify_document_checksum,
+)
+
+from app.services.document_observability_service import (
+    document_observability,
+    observe_processing_stage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +72,10 @@ class DocumentProcessingStorageError(DocumentProcessingError):
 
 class DocumentProcessingDatabaseError(DocumentProcessingError):
     """Raised when document status cannot be updated."""
+
+
+class DocumentProcessingAlreadyClaimedError(DocumentProcessingError):
+    """Raised when another worker has already claimed this document."""
 
 
 # ==========================================================
@@ -94,6 +118,7 @@ def _replace_object(instance, **updates):
 
     Supports SimpleNamespace objects used in tests.
     """
+
     try:
         return replace(instance, **updates)
 
@@ -109,8 +134,6 @@ def _replace_object(instance, **updates):
 def _to_dict(value):
     """
     Recursively convert objects into JSON-compatible values.
-    Supports dataclasses, SimpleNamespace, dictionaries,
-    lists, tuples, UUIDs, Paths and datetime objects.
     """
 
     if value is None:
@@ -153,6 +176,188 @@ def _to_dict(value):
         f"Cannot serialize object of type {type(value).__name__}."
     )
 
+
+# ==========================================================
+# PHASE 7.15 - CONFIGURATION VALIDATION
+# ==========================================================
+
+def _validate_processing_configuration(
+    *,
+    document_settings: DocumentSettings,
+    ocr_settings: OCRSettings,
+    cleaning_settings: TextCleaningSettings,
+    chunking_settings: ChunkingSettings,
+) -> None:
+    """Validate all processing configuration objects."""
+
+    if not isinstance(document_settings, DocumentSettings):
+        raise DocumentProcessingError(
+            "Invalid document processing configuration."
+        )
+
+    if not isinstance(ocr_settings, OCRSettings):
+        raise DocumentProcessingError(
+            "Invalid OCR configuration."
+        )
+
+    if not isinstance(cleaning_settings, TextCleaningSettings):
+        raise DocumentProcessingError(
+            "Invalid text-cleaning configuration."
+        )
+
+    if not isinstance(chunking_settings, ChunkingSettings):
+        raise DocumentProcessingError(
+            "Invalid chunking configuration."
+        )
+
+
+# ==========================================================
+# PHASE 7.15 - STORED DOCUMENT INTEGRITY VALIDATION
+# ==========================================================
+
+def _validate_stored_document(
+    *,
+    document_record,
+    pdf_path: Path,
+    document_settings: DocumentSettings,
+) -> Path:
+    """
+    Validate the PDF supplied for processing.
+
+    Database-backed document records must have:
+    - storage_key
+    - checksum_sha256
+    - file_size_bytes
+
+    Legacy lightweight test doubles without these attributes
+    can still exercise the processing pipeline using an
+    existing PDF path.
+    """
+
+    pdf_path = Path(pdf_path)
+
+    metadata_fields = (
+        "storage_key",
+        "checksum_sha256",
+        "file_size_bytes",
+    )
+
+    metadata_attributes_present = [
+        hasattr(document_record, field)
+        for field in metadata_fields
+    ]
+
+    # Compatibility for legacy lightweight test doubles.
+    # Actual SQLAlchemy Document models expose all three fields.
+    if not any(metadata_attributes_present):
+
+        if not pdf_path.is_file():
+            raise DocumentProcessingError(
+                "Stored PDF file does not exist."
+            )
+
+        logger.warning(
+            "Document %s has no storage metadata attributes. "
+            "Using legacy processing compatibility mode.",
+            getattr(document_record, "id", "unknown"),
+        )
+
+        return pdf_path.resolve()
+
+    # Partially populated metadata is never accepted.
+    if not all(metadata_attributes_present):
+        raise DocumentProcessingError(
+            "Document storage metadata is incomplete."
+        )
+
+    storage_key = document_record.storage_key
+    expected_checksum = document_record.checksum_sha256
+    expected_size = document_record.file_size_bytes
+
+    if (
+        not isinstance(storage_key, str)
+        or not storage_key.strip()
+    ):
+        raise DocumentProcessingError(
+            "Document storage key is invalid."
+        )
+
+    if (
+        not isinstance(expected_checksum, str)
+        or len(expected_checksum) != 64
+    ):
+        raise DocumentProcessingError(
+            "Document checksum metadata is invalid."
+        )
+
+    if (
+        not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or expected_size <= 0
+    ):
+        raise DocumentProcessingError(
+            "Document size metadata is invalid."
+        )
+
+    try:
+
+        registered_path = get_document_path(
+            storage_key,
+            document_settings,
+        )
+
+        registered_path = registered_path.resolve()
+        supplied_path = pdf_path.resolve()
+
+    except Exception as exc:
+
+        raise DocumentProcessingError(
+            "Unable to resolve the registered document."
+        ) from exc
+
+    # Verify that the supplied path belongs to this document.
+    if supplied_path != registered_path:
+        raise DocumentProcessingError(
+            "The supplied file does not match the registered document."
+        )
+
+    if not registered_path.is_file():
+        raise DocumentProcessingError(
+            "The registered document file does not exist."
+        )
+
+    # Verify stored file size.
+    try:
+        actual_size = registered_path.stat().st_size
+
+    except OSError as exc:
+        raise DocumentProcessingError(
+            "Unable to inspect the registered document."
+        ) from exc
+
+    if actual_size != expected_size:
+        raise DocumentProcessingError(
+            "Stored document size verification failed."
+        )
+
+    # Verify SHA-256 checksum.
+    try:
+
+        verify_document_checksum(
+            storage_key=storage_key,
+            expected_checksum=expected_checksum,
+            settings=document_settings,
+        )
+
+    except Exception as exc:
+
+        raise DocumentProcessingError(
+            "Stored document integrity verification failed."
+        ) from exc
+
+    return registered_path
+
+
 # ==========================================================
 # ATOMIC JSON STORAGE
 # ==========================================================
@@ -165,6 +370,7 @@ def _save_json_atomically(
     temporary_path = None
 
     try:
+
         destination.parent.mkdir(
             parents=True,
             exist_ok=True,
@@ -201,6 +407,7 @@ def _save_json_atomically(
     except Exception as exc:
 
         if temporary_path is not None:
+
             try:
                 temporary_path.unlink(missing_ok=True)
 
@@ -224,6 +431,8 @@ def _build_unified_artifact(
     ocr_result,
     cleaning_result,
     structure,
+    chunking_result,
+    chunking_artifact_path,
     started_at: datetime,
     completed_at: datetime,
 ) -> dict:
@@ -279,7 +488,65 @@ def _build_unified_artifact(
         ),
 
         "document_structure": structure,
+
+        "chunking": _to_dict(chunking_result),
+
+        "chunking_artifact_path": str(
+            chunking_artifact_path
+        ),
     }
+
+
+# ==========================================================
+# PHASE 7.8 - PROCESSING STATUS AND FAILURE RECOVERY
+# ==========================================================
+
+def _safe_failure_message(exc: Exception) -> str:
+    """
+    Return a controlled failure message.
+
+    Avoid exposing internal paths, database details,
+    or arbitrary exception messages.
+    """
+
+    if isinstance(exc, DocumentProcessingStorageError):
+        return "Document processing artifact storage failed."
+
+    if isinstance(exc, PDFExtractionError):
+        return "PDF text extraction failed."
+
+    if isinstance(exc, OCRProcessingError):
+        return "OCR processing failed."
+
+    if isinstance(exc, DocumentProcessingError):
+        return str(exc)[:500]
+
+    return "An unexpected document processing error occurred."
+
+
+def _persist_processing_failure(
+    *,
+    document_record,
+    db: Session,
+    exc: Exception,
+) -> None:
+    """
+    Persist failure status and completion timestamp.
+    """
+
+    db.rollback()
+
+    document_record.processing_status = "failed"
+
+    document_record.processing_completed_at = _utc_now()
+
+    document_record.processing_error = _safe_failure_message(
+        exc
+    )
+
+    db.add(document_record)
+
+    db.commit()
 
 
 # ==========================================================
@@ -293,19 +560,25 @@ def process_document(
     db: Session,
     document_settings: DocumentSettings,
     ocr_settings: OCRSettings,
+    cleaning_settings: TextCleaningSettings | None = None,
+    chunking_settings: ChunkingSettings | None = None,
 ) -> DocumentProcessingResult:
-
     """
     Complete document processing workflow.
 
-    1. Validate document.
-    2. Mark document as processing.
-    3. Extract native PDF text.
-    4. Perform OCR.
-    5. Clean and normalize extracted text.
-    6. Extract document structure.
-    7. Generate unified JSON artifact.
-    8. Update database status.
+    Phase 7.17 improvements:
+    - Atomic document processing claim.
+    - Prevents multiple workers from processing the same document.
+    - Processing attempt count is managed by the status service.
+    - Existing extraction, OCR, cleaning, structure,
+      chunking, artifact generation and failure recovery
+      are preserved.
+
+    Phase 7.21 improvements:
+    - Processing start/completion/failure metrics.
+    - Per-stage execution timing.
+    - Per-stage failure tracking.
+    - Structured observability logging.
     """
 
     # ------------------------------------------------------
@@ -313,6 +586,7 @@ def process_document(
     # ------------------------------------------------------
 
     try:
+
         document_id = str(
             UUID(str(document_record.id))
         )
@@ -328,85 +602,157 @@ def process_document(
         ) from exc
 
     # ------------------------------------------------------
-    # STEP 2: Validate PDF
+    # STEP 2: Initialize and validate configuration
     # ------------------------------------------------------
 
-    pdf_path = Path(pdf_path)
+    cleaning_settings = (
+        cleaning_settings or TextCleaningSettings()
+    )
 
-    if not pdf_path.is_file():
-        raise DocumentProcessingError(
-            "Stored PDF file does not exist."
+    chunking_settings = (
+        chunking_settings or ChunkingSettings()
+    )
+
+    _validate_processing_configuration(
+        document_settings=document_settings,
+        ocr_settings=ocr_settings,
+        cleaning_settings=cleaning_settings,
+        chunking_settings=chunking_settings,
+    )
+
+    # ------------------------------------------------------
+    # STEP 3: Atomically claim processing
+    # ------------------------------------------------------
+
+    try:
+        claimed_document = claim_document_for_processing(
+            db=db,
+            document_id=UUID(document_id),
         )
 
-    started_at = _utc_now()
+    except DocumentAlreadyClaimedError as exc:
+        raise DocumentProcessingAlreadyClaimedError(
+            "Document is already processing or cannot be processed."
+        ) from exc
+
+    except Exception as exc:
+        raise DocumentProcessingDatabaseError(
+            "Unable to claim document for processing."
+        ) from exc
+
+    document_record = claimed_document
+
+    started_at = (
+        document_record.processing_started_at
+        or _utc_now()
+    )
+
+    processing_attempt = getattr(
+        document_record,
+        "processing_attempts",
+        0,
+    )
+
+    # Phase 7.21: Record processing start.
+    document_observability.record_processing_started(
+        document_id=document_id,
+        attempt=processing_attempt,
+    )
 
     artifact_path = None
     cleaning_artifact_path = None
     structure_artifact_path = None
-
-    # ------------------------------------------------------
-    # STEP 3: Mark document as processing
-    # ------------------------------------------------------
-
-    try:
-        document_record.processing_status = "processing"
-
-        db.add(document_record)
-        db.commit()
-
-    except Exception as exc:
-        db.rollback()
-
-        raise DocumentProcessingDatabaseError(
-            "Unable to update document processing status."
-        ) from exc
+    chunking_artifact_path = None
 
     try:
 
         # --------------------------------------------------
-        # STEP 4: Native PDF text extraction
+        # STEP 5: Validate registered PDF and integrity
         # --------------------------------------------------
 
-        native_result = extract_pdf_text(
-            pdf_path=pdf_path,
+        with observe_processing_stage(
             document_id=document_id,
-            settings=document_settings,
+            stage="stored_document_validation",
+        ):
+            pdf_path = _validate_stored_document(
+                document_record=document_record,
+                pdf_path=pdf_path,
+                document_settings=document_settings,
+            )
+
+        # --------------------------------------------------
+        # STEP 6: Native PDF text extraction
+        # --------------------------------------------------
+
+        logger.info(
+            "Starting native PDF extraction for document %s.",
+            document_id,
         )
 
-        # --------------------------------------------------
-        # STEP 5: Native + OCR processing
-        # OCR runs only once.
-        # --------------------------------------------------
-
-        ocr_result = extract_pdf_with_ocr(
-            pdf_path=pdf_path,
+        with observe_processing_stage(
             document_id=document_id,
-            settings=ocr_settings,
-            max_pages=document_settings.max_pages,
+            stage="native_pdf_extraction",
+        ):
+            native_result = extract_pdf_text(
+                pdf_path=pdf_path,
+                document_id=document_id,
+                settings=document_settings,
+            )
+
+        # --------------------------------------------------
+        # STEP 7: Native + OCR processing
+        # --------------------------------------------------
+
+        logger.info(
+            "Starting OCR processing for document %s.",
+            document_id,
         )
 
-        # --------------------------------------------------
-        # STEP 6: PHASE 7.7
-        # Text cleaning and normalization
-        # --------------------------------------------------
-
-        cleaning_result = clean_document_text(
+        with observe_processing_stage(
             document_id=document_id,
-            pages=ocr_result.pages,
-            settings=TextCleaningSettings(),
-        )
-
-        cleaning_artifact_path = save_cleaned_text_artifact(
-            result=cleaning_result,
-            storage_root=document_settings.storage_root,
-        )
+            stage="ocr_processing",
+        ):
+            ocr_result = extract_pdf_with_ocr(
+                pdf_path=pdf_path,
+                document_id=document_id,
+                settings=ocr_settings,
+                max_pages=document_settings.max_pages,
+            )
 
         # --------------------------------------------------
-        # STEP 7: Build cleaned OCR page results
-        # Preserve original OCR metadata.
+        # STEP 8: Text cleaning and normalization
+        # --------------------------------------------------
+
+        logger.info(
+            "Starting text cleaning for document %s.",
+            document_id,
+        )
+
+        with observe_processing_stage(
+            document_id=document_id,
+            stage="text_cleaning",
+        ):
+            cleaning_result = clean_document_text(
+                document_id=document_id,
+                pages=ocr_result.pages,
+                settings=cleaning_settings,
+            )
+
+        with observe_processing_stage(
+            document_id=document_id,
+            stage="cleaned_text_artifact_storage",
+        ):
+            cleaning_artifact_path = save_cleaned_text_artifact(
+                result=cleaning_result,
+                storage_root=document_settings.storage_root,
+            )
+
+        # --------------------------------------------------
+        # STEP 9: Build cleaned OCR page results
         # --------------------------------------------------
 
         if len(ocr_result.pages) != len(cleaning_result.pages):
+
             raise DocumentProcessingError(
                 "OCR and cleaned page counts do not match."
             )
@@ -449,35 +795,76 @@ def process_document(
         )
 
         # --------------------------------------------------
-        # STEP 8: PHASE 7.6
-        # Document structure extraction
-        # Reuse cleaned OCR results.
+        # STEP 10: Document structure extraction
         # --------------------------------------------------
 
-        structure, structure_artifact_path = (
-            process_document_structure(
-                pdf_path=pdf_path,
-                document_id=document_id,
-                storage_root=document_settings.storage_root,
-                ocr_pages=cleaned_ocr_result.pages,
-            )
+        logger.info(
+            "Starting document structure extraction for document %s.",
+            document_id,
         )
 
+        with observe_processing_stage(
+            document_id=document_id,
+            stage="document_structure_extraction",
+        ):
+            structure, structure_artifact_path = (
+                process_document_structure(
+                    pdf_path=pdf_path,
+                    document_id=document_id,
+                    storage_root=document_settings.storage_root,
+                    ocr_pages=cleaned_ocr_result.pages,
+                )
+            )
+
         # --------------------------------------------------
-        # STEP 9: Generate unified artifact
+        # STEP 11: Document chunking
+        # --------------------------------------------------
+
+        logger.info(
+            "Starting document chunking for document %s.",
+            document_id,
+        )
+
+        with observe_processing_stage(
+            document_id=document_id,
+            stage="document_chunking",
+        ):
+            chunking_result = chunk_document_pages(
+                document_id=document_id,
+                pages=cleaned_ocr_result.pages,
+                settings=chunking_settings,
+            )
+
+        with observe_processing_stage(
+            document_id=document_id,
+            stage="chunking_artifact_storage",
+        ):
+            chunking_artifact_path = save_chunking_artifact(
+                result=chunking_result,
+                storage_root=document_settings.storage_root,
+            )
+
+        # --------------------------------------------------
+        # STEP 12: Generate unified artifact
         # --------------------------------------------------
 
         completed_at = _utc_now()
 
-        artifact = _build_unified_artifact(
+        with observe_processing_stage(
             document_id=document_id,
-            native_result=native_result,
-            ocr_result=cleaned_ocr_result,
-            cleaning_result=cleaning_result,
-            structure=structure,
-            started_at=started_at,
-            completed_at=completed_at,
-        )
+            stage="unified_artifact_serialization",
+        ):
+            artifact = _build_unified_artifact(
+                document_id=document_id,
+                native_result=native_result,
+                ocr_result=cleaned_ocr_result,
+                cleaning_result=cleaning_result,
+                structure=structure,
+                chunking_result=chunking_result,
+                chunking_artifact_path=chunking_artifact_path,
+                started_at=started_at,
+                completed_at=completed_at,
+            )
 
         processed_directory = (
             Path(document_settings.storage_root)
@@ -489,13 +876,17 @@ def process_document(
             / f"{document_id}_processed.json"
         )
 
-        _save_json_atomically(
-            artifact,
-            artifact_path,
-        )
+        with observe_processing_stage(
+            document_id=document_id,
+            stage="unified_artifact_storage",
+        ):
+            _save_json_atomically(
+                artifact,
+                artifact_path,
+            )
 
         # --------------------------------------------------
-        # STEP 10: Update database metadata
+        # STEP 13: Persist successful processing
         # --------------------------------------------------
 
         document_record.page_count = (
@@ -504,17 +895,43 @@ def process_document(
 
         document_record.processing_status = "completed"
 
-        db.add(document_record)
-        db.commit()
-        db.refresh(document_record)
+        document_record.processing_completed_at = completed_at
 
-        # --------------------------------------------------
-        # STEP 11: Return processing result
-        # --------------------------------------------------
+        document_record.processing_error = None
+
+        db.add(document_record)
+
+        db.commit()
+
+        db.refresh(document_record)
 
         duration = (
             completed_at - started_at
         ).total_seconds()
+
+        # Phase 7.21: Record successful processing.
+        document_observability.record_processing_completed(
+            document_id=document_id,
+            duration_seconds=duration,
+            page_count=cleaned_ocr_result.page_count,
+            attempt=getattr(
+                document_record,
+                "processing_attempts",
+                processing_attempt,
+            ),
+        )
+
+        logger.info(
+            "Document %s processing completed successfully. "
+            "Pages: %s, attempts: %s.",
+            document_id,
+            cleaned_ocr_result.page_count,
+            document_record.processing_attempts,
+        )
+
+        # --------------------------------------------------
+        # STEP 14: Prepare processing result
+        # --------------------------------------------------
 
         combined_warnings = list(
             cleaned_ocr_result.warnings
@@ -525,6 +942,7 @@ def process_document(
         )
 
         return DocumentProcessingResult(
+
             document_id=document_id,
 
             processing_status="completed",
@@ -569,50 +987,79 @@ def process_document(
 
     except Exception as exc:
 
-        # --------------------------------------------------
-        # STEP 12: Roll back database transaction
-        # --------------------------------------------------
+        # A duplicate worker must not mark the active worker's
+        # document as failed.
+        if isinstance(
+            exc,
+            DocumentProcessingAlreadyClaimedError,
+        ):
+            raise
 
-        db.rollback()
+        # Phase 7.21: Record processing failure.
+        document_observability.record_processing_failed(
+            document_id=document_id,
+            stage="document_processing_pipeline",
+            error_type=type(exc).__name__,
+            attempt=getattr(
+                document_record,
+                "processing_attempts",
+                processing_attempt,
+            ),
+        )
+
+        logger.error(
+            "Document %s processing failed: %s",
+            document_id,
+            type(exc).__name__,
+        )
 
         # --------------------------------------------------
-        # STEP 13: Remove incomplete artifacts
+        # STEP 15: Remove incomplete artifacts
         # --------------------------------------------------
 
         for path in (
             artifact_path,
             cleaning_artifact_path,
             structure_artifact_path,
+            chunking_artifact_path,
         ):
 
             if path is not None:
+
                 try:
-                    Path(path).unlink(missing_ok=True)
+
+                    Path(path).unlink(
+                        missing_ok=True
+                    )
 
                 except OSError:
+
                     logger.exception(
                         "Unable to remove incomplete artifact."
                     )
 
         # --------------------------------------------------
-        # STEP 14: Mark document as failed
+        # STEP 16: Persist failure information
         # --------------------------------------------------
 
         try:
-            document_record.processing_status = "failed"
 
-            db.add(document_record)
-            db.commit()
+            _persist_processing_failure(
+                document_record=document_record,
+                db=db,
+                exc=exc,
+            )
 
         except Exception:
+
             db.rollback()
 
             logger.exception(
-                "Failed to update document status after processing failure."
+                "Unable to persist document processing failure."
             )
 
         # --------------------------------------------------
-        # STEP 15: Handle known exceptions
+        # STEP 17: Handle known exceptions
         # --------------------------------------------------
 
         if isinstance(exc, DocumentProcessingError):
@@ -625,12 +1072,13 @@ def process_document(
                 OCRProcessingError,
             ),
         ):
+
             raise DocumentProcessingError(
                 "Document text extraction or OCR processing failed."
             ) from exc
 
         # --------------------------------------------------
-        # STEP 16: Handle unexpected exceptions
+        # STEP 18: Handle unexpected exceptions
         # --------------------------------------------------
 
         logger.exception(

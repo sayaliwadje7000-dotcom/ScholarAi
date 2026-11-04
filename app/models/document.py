@@ -10,6 +10,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     func,
     text,
@@ -54,7 +55,10 @@ class Document(Base):
             "('pending', 'processing', 'completed', 'failed')",
             name="ck_documents_valid_processing_status",
         ),
-
+                CheckConstraint(
+            "processing_attempts >= 0",
+            name="ck_documents_nonnegative_processing_attempts",
+        ),
         CheckConstraint(
             "checksum_sha256 ~ '^[0-9a-f]{64}$'",
             name="ck_documents_valid_sha256",
@@ -138,7 +142,32 @@ class Document(Base):
         default="pending",
         server_default=text("'pending'"),
     )
+        # Processing attempt start timestamp.
+    processing_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
+    # Processing attempt completion timestamp.
+    # Populated for both successful and failed attempts.
+    processing_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # Sanitized description of the most recent processing failure.
+    processing_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    # Total number of processing attempts.
+    processing_attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
     # Upload timestamp.
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

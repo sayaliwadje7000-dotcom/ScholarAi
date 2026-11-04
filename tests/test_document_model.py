@@ -173,3 +173,98 @@ def test_document_repr():
     )
 
     assert "machine_learning.pdf" in repr(document)
+
+
+def test_document_processing_started_at_column():
+    column = Document.__table__.columns[
+        "processing_started_at"
+    ]
+
+    assert column.nullable is True
+    assert column.type.timezone is True
+
+
+def test_document_processing_completed_at_column():
+    column = Document.__table__.columns[
+        "processing_completed_at"
+    ]
+
+    assert column.nullable is True
+    assert column.type.timezone is True
+
+
+def test_document_processing_error_column():
+    column = Document.__table__.columns[
+        "processing_error"
+    ]
+
+    assert column.nullable is True
+
+
+def test_document_processing_attempts_column():
+    column = Document.__table__.columns[
+        "processing_attempts"
+    ]
+
+    assert column.nullable is False
+    assert column.default.arg == 0
+
+
+def test_document_processing_attempts_constraint():
+    constraints = {
+        constraint.name
+        for constraint in Document.__table__.constraints
+    }
+
+    assert (
+        "ck_documents_nonnegative_processing_attempts"
+        in constraints
+    )
+
+    assert column.nullable is True
+
+    assert column.type.timezone is True
+
+
+def test_document_processing_completed_at_column():
+
+    column = Document.__table__.columns[
+        "processing_completed_at"
+    ]
+
+    assert column.nullable is True
+
+    assert column.type.timezone is True
+
+
+def test_document_processing_error_column():
+
+    column = Document.__table__.columns[
+        "processing_error"
+    ]
+
+    assert column.nullable is True
+
+
+def test_document_processing_attempts_column():
+
+    column = Document.__table__.columns[
+        "processing_attempts"
+    ]
+
+    assert column.nullable is False
+
+    assert column.default.arg == 0
+
+
+def test_document_processing_attempts_constraint():
+
+    constraints = {
+        constraint.name
+        for constraint in Document.__table__.constraints
+    }
+
+    assert (
+        "ck_documents_nonnegative_processing_attempts"
+        in constraints
+    )

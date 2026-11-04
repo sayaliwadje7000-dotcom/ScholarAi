@@ -47,6 +47,8 @@ class InvalidDocumentStatusError(DocumentStatusError):
 class InvalidStatusTransitionError(DocumentStatusError):
     """Raised when a status transition is not permitted."""
 
+class DocumentAlreadyClaimedError(DocumentStatusError):
+    """Raised when another worker already owns document processing."""
 
 class DocumentStatusPersistenceError(DocumentStatusError):
     """Raised when a status update cannot be persisted."""
@@ -116,6 +118,7 @@ def _get_locked_document(
         select(Document)
         .where(Document.id == document_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
 
     document = db.scalar(statement)
@@ -303,3 +306,42 @@ def can_retry_document(document: Document) -> bool:
     """Check whether a document is eligible for retry."""
 
     return document.processing_status == "failed"
+# ============================================================
+# ATOMIC PROCESSING CLAIM
+# ============================================================
+
+# ============================================================
+# ATOMIC PROCESSING CLAIM
+# ============================================================
+
+def claim_document_for_processing(
+    *,
+    db: Session,
+    document_id: uuid.UUID,
+) -> Document:
+    """
+    Atomically claim a pending or failed document for processing.
+
+    Uses the row-locked status transition to prevent concurrent
+    workers from claiming the same document.
+
+    The processing attempt counter is incremented exactly once
+    by transition_document_status().
+    """
+
+    if not isinstance(document_id, uuid.UUID):
+        raise ValueError(
+            "A valid document UUID is required."
+        )
+
+    try:
+        return transition_document_status(
+            db=db,
+            document_id=document_id,
+            new_status="processing",
+        )
+
+    except InvalidStatusTransitionError as exc:
+        raise DocumentAlreadyClaimedError(
+            "Document is already processing or cannot be claimed."
+        ) from exc

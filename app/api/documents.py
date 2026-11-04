@@ -52,8 +52,8 @@ from app.services.document_storage_service import (
     get_document_path,
 )
 
-from app.services.document_processing_service import (
-    process_document,
+from app.services.document_retry_service import (
+    process_document_with_retries,
 )
 
 
@@ -120,14 +120,14 @@ def process_document_background(
     """
     Process a document using an independent database session.
 
-    FastAPI BackgroundTasks are used for the current integration.
-    This is not a durable job queue.
+    Automatic retry is coordinated by document_retry_service.
+
+    FastAPI BackgroundTasks are not a durable job queue.
     """
 
     db = SessionLocal()
 
     try:
-
         document = db.get(
             Document,
             document_id,
@@ -156,7 +156,7 @@ def process_document_background(
             document_settings,
         )
 
-        process_document(
+        process_document_with_retries(
             document_record=document,
             pdf_path=Path(pdf_path),
             db=db,
@@ -170,7 +170,6 @@ def process_document_background(
         )
 
     except Exception:
-
         logger.exception(
             "Background processing failed for document %s.",
             document_id,
@@ -180,7 +179,6 @@ def process_document_background(
 
     finally:
         db.close()
-
 
 # ============================================================
 # UPLOAD DOCUMENT

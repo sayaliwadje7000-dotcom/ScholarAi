@@ -39,3 +39,8 @@ storage/
 
 # Uploaded PDF files
 *.pdf
+
+# Temporary Phase 7 audit and source review files
+phase_7_*_audit.txt
+phase_7_*_source_bundle.txt
+phase_7_*_test_review.txt

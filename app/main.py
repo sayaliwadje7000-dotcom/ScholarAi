@@ -3,11 +3,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-
+from app.api.documents import router as documents_router
 from app.api.chat import router as chat_router
 from app.core.config import settings
 from app.database.session import engine, get_db
-
+from app.api.documents import router as documents_router
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -64,11 +64,14 @@ def database_health_check():
             "status": "unhealthy",
             "database": "disconnected",
         }
-
-
 app.include_router(
     chat_router,
     prefix="/api/v1",
     tags=["Chat"],
 )
 
+app.include_router(
+    documents_router,
+    prefix="/api/v1/documents",
+    tags=["Documents"],
+)

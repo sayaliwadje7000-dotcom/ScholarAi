@@ -40,6 +40,11 @@ from app.services.document_chunking_service import (
     save_chunking_artifact,
 )
 
+# Phase 8.10: Document chunk persistence and embedding integration
+from app.services.document_indexing_service import (
+    index_document_chunks,
+)
+
 from app.services.document_status_service import (
     claim_document_for_processing,
     DocumentAlreadyClaimedError,
@@ -843,6 +848,39 @@ def process_document(
                 result=chunking_result,
                 storage_root=document_settings.storage_root,
             )
+
+        # --------------------------------------------------
+        # STEP 11.5: Persist chunks and generate embeddings
+        # --------------------------------------------------
+
+        logger.info(
+            "Starting document indexing for document %s.",
+            document_id,
+        )
+
+        with observe_processing_stage(
+            document_id=document_id,
+            stage="document_indexing",
+        ):
+            indexing_result = index_document_chunks(
+                db=db,
+                chunking_result=chunking_result,
+                batch_size=32,
+            )
+
+        logger.info(
+            (
+                "Document indexing finished. "
+                "Document=%s, chunks=%s, embeddings_ready=%s, "
+                "embeddings_failed=%s, skipped=%s, error=%s"
+            ),
+            document_id,
+            indexing_result.persisted_chunks,
+            indexing_result.embeddings_ready,
+            indexing_result.embeddings_failed,
+            indexing_result.embeddings_skipped,
+            indexing_result.indexing_error,
+        )
 
         # --------------------------------------------------
         # STEP 12: Generate unified artifact

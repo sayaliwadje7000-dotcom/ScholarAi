@@ -36,6 +36,8 @@ MODEL_TABLES = {
     "user_resource_interactions",
     "recommendations",
     "recommendation_feedback",
+    "document_chunks",
+    "chunk_embeddings",
 }
 
 

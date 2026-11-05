@@ -188,3 +188,53 @@ Still planned:
 
 **Implementation rule:** An endpoint or feature should only be marked implemented after its functionality has been developed and appropriately tested.
 
+## Semantic Retrieval API
+
+### POST /api/v1/retrieval/search
+
+Search academic documents using semantic similarity.
+
+Authentication is required.
+
+#### Request
+
+{
+    "query": "Explain binary search trees",
+    "document_id": null,
+    "document_ids": null,
+    "limit": 10,
+    "min_similarity": 0.65
+}
+
+#### Response
+
+{
+    "query": "Explain binary search trees",
+    "total_results": 1,
+    "results": [
+        {
+            "chunk_id": "chunk-001",
+            "document_id": "document-uuid",
+            "chunk_index": 0,
+            "text": "A binary search tree is...",
+            "page_numbers": [2],
+            "start_page": 2,
+            "end_page": 2,
+            "similarity": 0.91,
+            "distance": 0.09,
+            "provider": "gemini",
+            "model": "gemini-embedding-2",
+            "dimensions": 1536,
+            "pipeline_version": "1.0.0",
+            "chunking_version": "1.0"
+        }
+    ]
+}
+
+#### Security
+
+- Authentication is required.
+- Document ownership is verified using the authenticated user ID.
+- Client-supplied document IDs are never trusted.
+- Inaccessible documents return HTTP 404.
+- Users cannot retrieve chunks belonging to another user.

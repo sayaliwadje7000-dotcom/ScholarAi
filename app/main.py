@@ -8,7 +8,7 @@ from app.api.chat import router as chat_router
 from app.core.config import settings
 from app.database.session import engine, get_db
 from app.api.documents import router as documents_router
-
+from app.api.retrieval import router as retrieval_router
 app = FastAPI(
     title=settings.APP_NAME,
     description="An AI-powered academic learning platform",
@@ -74,4 +74,9 @@ app.include_router(
     documents_router,
     prefix="/api/v1/documents",
     tags=["Documents"],
+)
+app.include_router(
+    retrieval_router,
+    prefix="/api/v1/retrieval",
+    tags=["Retrieval"],
 )

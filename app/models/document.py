@@ -1,3 +1,4 @@
+
 import uuid
 
 from datetime import datetime, timezone
@@ -15,9 +16,7 @@ from sqlalchemy import (
     func,
     text,
 )
-
 from sqlalchemy.dialects.postgresql import UUID
-
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
@@ -39,23 +38,20 @@ class Document(Base):
             "storage_key",
             name="uq_documents_storage_key",
         ),
-
         CheckConstraint(
             "file_size_bytes > 0",
             name="ck_documents_positive_file_size",
         ),
-
         CheckConstraint(
             "page_count IS NULL OR page_count > 0",
             name="ck_documents_positive_page_count",
         ),
-
         CheckConstraint(
             "processing_status IN "
             "('pending', 'processing', 'completed', 'failed')",
             name="ck_documents_valid_processing_status",
         ),
-                CheckConstraint(
+        CheckConstraint(
             "processing_attempts >= 0",
             name="ck_documents_nonnegative_processing_attempts",
         ),
@@ -63,17 +59,14 @@ class Document(Base):
             "checksum_sha256 ~ '^[0-9a-f]{64}$'",
             name="ck_documents_valid_sha256",
         ),
-
         Index(
             "ix_documents_user_id",
             "user_id",
         ),
-
         Index(
             "ix_documents_processing_status",
             "processing_status",
         ),
-
         Index(
             "ix_documents_user_uploaded",
             "user_id",
@@ -142,14 +135,14 @@ class Document(Base):
         default="pending",
         server_default=text("'pending'"),
     )
-        # Processing attempt start timestamp.
+
+    # Processing attempt start timestamp.
     processing_started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
     )
 
     # Processing attempt completion timestamp.
-    # Populated for both successful and failed attempts.
     processing_completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
@@ -168,6 +161,7 @@ class Document(Base):
         default=0,
         server_default=text("0"),
     )
+
     # Upload timestamp.
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -180,6 +174,14 @@ class Document(Base):
     user: Mapped["User"] = relationship(
         "User",
         back_populates="documents",
+    )
+
+    # Relationship with document chunks.
+    chunks: Mapped[list["DocumentChunk"]] = relationship(
+        "DocumentChunk",
+        back_populates="document",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
     def __repr__(self) -> str:

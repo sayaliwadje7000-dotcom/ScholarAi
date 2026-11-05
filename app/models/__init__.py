@@ -10,7 +10,8 @@ from app.models.study_resource_category import study_resource_categories
 from app.models.user_resource_interaction import UserResourceInteraction
 from app.models.recommendation import Recommendation
 from app.models.recommendation_feedback import RecommendationFeedback
-
+from app.models.document_chunk import DocumentChunk
+from app.models.chunk_embedding import ChunkEmbedding
 
 __all__ = [
     "User",
@@ -25,4 +26,6 @@ __all__ = [
     "UserResourceInteraction",
     "Recommendation",
     "RecommendationFeedback",
+    "DocumentChunk",
+    "ChunkEmbedding",
 ]

@@ -1,0 +1,50 @@
+{
+  "dataset_name": "ScholarAI-RAG-Baseline",
+  "version": "1.0",
+  "cases": [
+    {
+      "case_id": "ML-001",
+      "query": "What is machine learning?",
+      "expected_chunk_ids": [
+        "chunk-001",
+        "chunk-002"
+      ],
+      "reference_answer": "Machine learning is a branch of artificial intelligence that enables systems to learn patterns from data.",
+      "required_terms": [
+        "machine learning",
+        "artificial intelligence",
+        "data"
+      ],
+      "expected_citation_source_ids": [
+        "S1"
+      ],
+      "answerable": true
+    },
+    {
+      "case_id": "DB-001",
+      "query": "What is database normalization?",
+      "expected_chunk_ids": [
+        "chunk-010"
+      ],
+      "reference_answer": "Database normalization organizes relational database structures to reduce redundancy and improve data integrity.",
+      "required_terms": [
+        "normalization",
+        "redundancy",
+        "data integrity"
+      ],
+      "expected_citation_source_ids": [
+        "S1"
+      ],
+      "answerable": true
+    },
+    {
+      "case_id": "UNKNOWN-001",
+      "query": "Explain a topic not covered by the uploaded documents.",
+      "expected_chunk_ids": [],
+      "reference_answer": null,
+      "required_terms": [],
+      "expected_citation_source_ids": [],
+      "answerable": false
+    }
+  ]
+}

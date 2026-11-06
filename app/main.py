@@ -1,14 +1,19 @@
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-from app.api.documents import router as documents_router
+
 from app.api.chat import router as chat_router
-from app.core.config import settings
-from app.database.session import engine, get_db
 from app.api.documents import router as documents_router
 from app.api.retrieval import router as retrieval_router
+from app.api.rag import router as rag_router
+
+from app.core.config import settings
+
+from app.database.session import engine
+
+
 app = FastAPI(
     title=settings.APP_NAME,
     description="An AI-powered academic learning platform",
@@ -16,7 +21,10 @@ app = FastAPI(
 )
 
 
-# Allow the local frontend to communicate with the backend.
+# ============================================================
+# CORS CONFIGURATION
+# ============================================================
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -24,10 +32,21 @@ app.add_middleware(
         "http://localhost:5500",
     ],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_methods=[
+        "GET",
+        "POST",
+        "OPTIONS",
+    ],
+    allow_headers=[
+        "Content-Type",
+        "Authorization",
+    ],
 )
 
+
+# ============================================================
+# APPLICATION HEALTH
+# ============================================================
 
 @app.get("/")
 def home():
@@ -50,7 +69,9 @@ def database_health_check():
     """
     Checks whether PostgreSQL is reachable.
     """
+
     try:
+
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
 
@@ -60,23 +81,40 @@ def database_health_check():
         }
 
     except SQLAlchemyError:
+
         return {
             "status": "unhealthy",
             "database": "disconnected",
         }
+
+
+# ============================================================
+# API ROUTERS
+# ============================================================
+
 app.include_router(
     chat_router,
     prefix="/api/v1",
     tags=["Chat"],
 )
 
+
 app.include_router(
     documents_router,
     prefix="/api/v1/documents",
     tags=["Documents"],
 )
+
+
 app.include_router(
     retrieval_router,
     prefix="/api/v1/retrieval",
     tags=["Retrieval"],
+)
+
+
+app.include_router(
+    rag_router,
+    prefix="/api/v1/rag",
+    tags=["RAG"],
 )

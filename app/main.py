@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
+from app.api.recommendations import router as recommendations_router
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -117,4 +117,9 @@ app.include_router(
     rag_router,
     prefix="/api/v1/rag",
     tags=["RAG"],
+)
+app.include_router(
+    recommendations_router,
+    prefix="/api/v1/recommendations",
+    tags=["Recommendations"],
 )

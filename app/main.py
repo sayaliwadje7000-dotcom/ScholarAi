@@ -1,6 +1,8 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.recommendations import router as recommendations_router
+
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -8,22 +10,59 @@ from app.api.chat import router as chat_router
 from app.api.documents import router as documents_router
 from app.api.retrieval import router as retrieval_router
 from app.api.rag import router as rag_router
+from app.api.recommendations import router as recommendations_router
+
+from app.api.content_recommendations import (
+    router as content_recommendations_router,
+)
+
+from app.api.resource_recommendations import (
+    router as resource_recommendations_router,
+)
 
 from app.core.config import settings
 
 from app.database.session import engine
-from app.api.content_recommendations import (
-    router as content_recommendations_router,
+
+from app.integrations.opportunities.registry import (
+    OpportunityProviderRegistry,
 )
+
+
+# ============================================================
+# APPLICATION LIFECYCLE
+# ============================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Manages application startup and shutdown resources.
+    """
+
+    opportunity_registry = OpportunityProviderRegistry()
+
+    app.state.opportunity_provider_registry = (
+        opportunity_registry
+    )
+
+    try:
+        yield
+
+    finally:
+        await opportunity_registry.close()
+
+
+# ============================================================
+# FASTAPI APPLICATION
+# ============================================================
 
 app = FastAPI(
     title=settings.APP_NAME,
     description="An AI-powered academic learning platform",
     version=settings.APP_VERSION,
+    lifespan=lifespan,
 )
-from app.api.resource_recommendations import (
-    router as resource_recommendations_router,
-)
+
 
 # ============================================================
 # CORS CONFIGURATION
@@ -102,13 +141,11 @@ app.include_router(
     tags=["Chat"],
 )
 
-
 app.include_router(
     documents_router,
     prefix="/api/v1/documents",
     tags=["Documents"],
 )
-
 
 app.include_router(
     retrieval_router,
@@ -116,20 +153,22 @@ app.include_router(
     tags=["Retrieval"],
 )
 
-
 app.include_router(
     rag_router,
     prefix="/api/v1/rag",
     tags=["RAG"],
 )
+
 app.include_router(
     recommendations_router,
     prefix="/api/v1/recommendations",
     tags=["Recommendations"],
 )
+
 app.include_router(
     content_recommendations_router,
 )
+
 app.include_router(
     resource_recommendations_router,
     prefix="/api/v1",

@@ -1,0 +1,3950 @@
+
+
+==================================================
+FILE: app/main.py
+==================================================
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.api.recommendations import router as recommendations_router
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.api.chat import router as chat_router
+from app.api.documents import router as documents_router
+from app.api.retrieval import router as retrieval_router
+from app.api.rag import router as rag_router
+
+from app.core.config import settings
+
+from app.database.session import engine
+from app.api.content_recommendations import (
+    router as content_recommendations_router,
+)
+
+app = FastAPI(
+    title=settings.APP_NAME,
+    description="An AI-powered academic learning platform",
+    version=settings.APP_VERSION,
+)
+
+
+# ============================================================
+# CORS CONFIGURATION
+# ============================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        settings.FRONTEND_ORIGIN,
+        "http://localhost:5500",
+    ],
+    allow_credentials=False,
+    allow_methods=[
+        "GET",
+        "POST",
+        "OPTIONS",
+    ],
+    allow_headers=[
+        "Content-Type",
+        "Authorization",
+    ],
+)
+
+
+# ============================================================
+# APPLICATION HEALTH
+# ============================================================
+
+@app.get("/")
+def home():
+    return {
+        "application": "ScholarAI",
+        "message": "Welcome to ScholarAI!",
+        "status": "running",
+    }
+
+
+@app.get("/health")
+def health_check():
+    return {
+        "status": "healthy",
+    }
+
+
+@app.get("/health/database")
+def database_health_check():
+    """
+    Checks whether PostgreSQL is reachable.
+    """
+
+    try:
+
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+
+        return {
+            "status": "healthy",
+            "database": "connected",
+        }
+
+    except SQLAlchemyError:
+
+        return {
+            "status": "unhealthy",
+            "database": "disconnected",
+        }
+
+
+# ============================================================
+# API ROUTERS
+# ============================================================
+
+app.include_router(
+    chat_router,
+    prefix="/api/v1",
+    tags=["Chat"],
+)
+
+
+app.include_router(
+    documents_router,
+    prefix="/api/v1/documents",
+    tags=["Documents"],
+)
+
+
+app.include_router(
+    retrieval_router,
+    prefix="/api/v1/retrieval",
+    tags=["Retrieval"],
+)
+
+
+app.include_router(
+    rag_router,
+    prefix="/api/v1/rag",
+    tags=["RAG"],
+)
+app.include_router(
+    recommendations_router,
+    prefix="/api/v1/recommendations",
+    tags=["Recommendations"],
+)
+app.include_router(
+    content_recommendations_router,
+)
+
+
+==================================================
+FILE: app/core/config.py
+==================================================
+
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+class Settings:
+    """Central configuration for the ScholarAI backend."""
+
+    APP_NAME: str = "ScholarAI"
+    APP_VERSION: str = "0.1.0"
+
+    # Frontend development server.
+    FRONTEND_ORIGIN: str = os.getenv(
+        "SCHOLARAI_FRONTEND_ORIGIN",
+        "http://127.0.0.1:5500",
+    )
+
+    # Backend development server.
+    BACKEND_HOST: str = os.getenv(
+        "SCHOLARAI_BACKEND_HOST",
+        "127.0.0.1",
+    )
+
+    BACKEND_PORT: int = int(
+        os.getenv("SCHOLARAI_BACKEND_PORT", "8000")
+    )
+
+    # PostgreSQL database.
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+
+
+settings = Settings()
+
+
+==================================================
+FILE: app/database/session.py
+==================================================
+
+
+from collections.abc import Generator
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.core.config import settings
+
+
+if not settings.DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is missing. Check your .env configuration."
+    )
+
+
+engine = create_engine(
+    settings.DATABASE_URL,
+    pool_pre_ping=True,
+    pool_recycle=1800,
+)
+
+
+SessionLocal = sessionmaker(
+    bind=engine,
+    class_=Session,
+    autoflush=False,
+    autocommit=False,
+    expire_on_commit=False,
+)
+
+
+def get_db() -> Generator[Session, None, None]:
+    """
+    Provides a database session to API endpoints.
+
+    Automatically rolls back unfinished transactions on errors
+    and closes the session after use.
+    """
+    db = SessionLocal()
+
+    try:
+        yield db
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        db.close()
+
+
+
+==================================================
+FILE: app/models/study_resource.py
+==================================================
+
+
+from datetime import datetime
+from decimal import Decimal
+from uuid import UUID, uuid4
+
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.ext.mutable import MutableDict
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database.base import Base
+
+
+class StudyResource(Base):
+    __tablename__ = "study_resources"
+
+    # Primary Key
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+
+    # Basic Resource Information
+    title: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    description: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    resource_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+    )
+
+    url: Mapped[str] = mapped_column(
+        String(2048),
+        nullable=False,
+    )
+
+    # Resource Provider Information
+    provider: Mapped[str | None] = mapped_column(
+        String(150),
+        nullable=True,
+    )
+
+    subject: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    language: Mapped[str | None] = mapped_column(
+        String(30),
+        nullable=True,
+    )
+
+    # Learning Information
+    difficulty_level: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+    )
+
+    estimated_duration_minutes: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    # Resource Quality
+    quality_score: Mapped[Decimal | None] = mapped_column(
+        Numeric(4, 2),
+        nullable=True,
+    )
+
+    # Flexible JSONB Metadata
+    resource_metadata: Mapped[dict] = mapped_column(
+        "metadata",
+        MutableDict.as_mutable(JSONB),
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    # Resource Availability
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+
+    # Timestamps
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # Phase 6.10: Many-to-Many Category Relationship
+    categories: Mapped[list["ResourceCategory"]] = relationship(
+        "ResourceCategory",
+        secondary="study_resource_categories",
+        back_populates="study_resources",
+        passive_deletes=True,
+    )
+
+    # Phase 6.11: User Resource Interactions
+    user_interactions: Mapped[
+        list["UserResourceInteraction"]
+    ] = relationship(
+        "UserResourceInteraction",
+        back_populates="resource",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="UserResourceInteraction.occurred_at",
+    )
+# Recommendations associated with this resource.
+    recommendations: Mapped[
+    list["Recommendation"]
+] = relationship(
+    "Recommendation",
+    back_populates="resource",
+    cascade="all, delete-orphan",
+    passive_deletes=True,
+    order_by="Recommendation.generated_at",
+)
+    # Database Constraints and Indexes
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(title)) > 0",
+            name="ck_study_resources_title_nonempty",
+        ),
+        CheckConstraint(
+            "length(trim(url)) > 0",
+            name="ck_study_resources_url_nonempty",
+        ),
+        CheckConstraint(
+            """
+            resource_type IN (
+                'video',
+                'article',
+                'notes',
+                'course',
+                'documentation',
+                'tutorial',
+                'website',
+                'book'
+            )
+            """,
+            name="ck_study_resources_valid_type",
+        ),
+        CheckConstraint(
+            """
+            difficulty_level IS NULL OR
+            difficulty_level IN (
+                'beginner',
+                'intermediate',
+                'advanced'
+            )
+            """,
+            name="ck_study_resources_valid_difficulty",
+        ),
+        CheckConstraint(
+            """
+            estimated_duration_minutes IS NULL OR
+            estimated_duration_minutes >= 0
+            """,
+            name="ck_study_resources_valid_duration",
+        ),
+        CheckConstraint(
+            """
+            quality_score IS NULL OR
+            (quality_score >= 0 AND quality_score <= 5)
+            """,
+            name="ck_study_resources_valid_quality",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(metadata) = 'object'",
+            name="ck_study_resources_metadata_object",
+        ),
+
+        # Individual Indexes
+        Index(
+            "ix_study_resources_resource_type",
+            "resource_type",
+        ),
+        Index(
+            "ix_study_resources_subject",
+            "subject",
+        ),
+        Index(
+            "ix_study_resources_language",
+            "language",
+        ),
+        Index(
+            "ix_study_resources_difficulty",
+            "difficulty_level",
+        ),
+        Index(
+            "ix_study_resources_is_active",
+            "is_active",
+        ),
+        Index(
+            "ix_study_resources_quality_score",
+            "quality_score",
+        ),
+        Index(
+            "ix_study_resources_created_at",
+            "created_at",
+        ),
+
+        # Composite Index
+        Index(
+            "ix_study_resources_subject_type_active",
+            "subject",
+            "resource_type",
+            "is_active",
+        ),
+    )
+
+    # Initialize Python-side defaults immediately
+    def __init__(self, **kwargs):
+        kwargs.setdefault("id", uuid4())
+        kwargs.setdefault("resource_metadata", {})
+        kwargs.setdefault("is_active", True)
+
+        super().__init__(**kwargs)
+
+    # String Representation
+    def __repr__(self) -> str:
+        return (
+            f"<StudyResource("
+            f"id={self.id}, "
+            f"title={self.title!r}, "
+            f"resource_type={self.resource_type!r})>"
+        )
+
+
+
+==================================================
+FILE: app/models/resource_category.py
+==================================================
+
+from datetime import datetime
+from uuid import UUID, uuid4
+
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database.base import Base
+
+
+class ResourceCategory(Base):
+    __tablename__ = "resource_categories"
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+
+    name: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+    )
+
+    slug: Mapped[str] = mapped_column(
+        String(120),
+        nullable=False,
+    )
+
+    description: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    parent_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(
+            "resource_categories.id",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
+
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    parent: Mapped["ResourceCategory | None"] = relationship(
+        "ResourceCategory",
+        remote_side="ResourceCategory.id",
+        back_populates="children",
+    )
+
+    children: Mapped[list["ResourceCategory"]] = relationship(
+        "ResourceCategory",
+        back_populates="parent",
+    )
+
+    study_resources = relationship(
+        "StudyResource",
+        secondary="study_resource_categories",
+        back_populates="categories",
+         passive_deletes=True,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "name",
+            name="uq_resource_categories_name",
+        ),
+        UniqueConstraint(
+            "slug",
+            name="uq_resource_categories_slug",
+        ),
+        CheckConstraint(
+            "length(trim(name)) > 0",
+            name="ck_resource_categories_name_nonempty",
+        ),
+        CheckConstraint(
+            "length(trim(slug)) > 0",
+            name="ck_resource_categories_slug_nonempty",
+        ),
+        CheckConstraint(
+            "slug = lower(slug)",
+            name="ck_resource_categories_slug_lowercase",
+        ),
+        CheckConstraint(
+            "parent_id IS NULL OR parent_id <> id",
+            name="ck_resource_categories_no_self_parent",
+        ),
+        Index(
+            "ix_resource_categories_parent_id",
+            "parent_id",
+        ),
+        Index(
+            "ix_resource_categories_is_active",
+            "is_active",
+        ),
+        Index(
+            "ix_resource_categories_name",
+            "name",
+        ),
+    )
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("id", uuid4())
+        kwargs.setdefault("is_active", True)
+        super().__init__(**kwargs)
+
+    def __repr__(self) -> str:
+        return (
+            f"<ResourceCategory("
+            f"id={self.id}, "
+            f"name={self.name!r}, "
+            f"slug={self.slug!r})>"
+        )
+
+
+==================================================
+FILE: app/models/recommendation.py
+==================================================
+
+from datetime import datetime
+from decimal import Decimal
+from uuid import UUID, uuid4
+
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.ext.mutable import MutableDict
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database.base import Base
+
+
+class Recommendation(Base):
+
+    __tablename__ = "recommendations"
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+
+    user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    resource_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("study_resources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    recommendation_type: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+    )
+
+    score: Mapped[Decimal] = mapped_column(
+        Numeric(5, 4),
+        nullable=False,
+    )
+
+    rank_position: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+
+    reason: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="generated",
+        server_default="generated",
+    )
+
+    algorithm_version: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="v1",
+        server_default="v1",
+    )
+
+    recommendation_metadata: Mapped[dict] = mapped_column(
+        "metadata",
+        MutableDict.as_mutable(JSONB),
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    user: Mapped["User"] = relationship(
+        "User",
+        back_populates="recommendations",
+    )
+
+    resource: Mapped["StudyResource"] = relationship(
+        "StudyResource",
+        back_populates="recommendations",
+    )
+    feedback_entries: Mapped[
+    list["RecommendationFeedback"]
+] = relationship(
+    "RecommendationFeedback",
+    back_populates="recommendation",
+    cascade="all, delete-orphan",
+    passive_deletes=True,
+    order_by="RecommendationFeedback.created_at",
+)
+
+    __table_args__ = (
+
+        CheckConstraint(
+            """
+            recommendation_type IN (
+                'personalized',
+                'trending',
+                'related',
+                'popular',
+                'continue_learning'
+            )
+            """,
+            name="ck_recommendations_valid_type",
+        ),
+
+        CheckConstraint(
+            "score >= 0 AND score <= 1",
+            name="ck_recommendations_valid_score",
+        ),
+
+        CheckConstraint(
+            "rank_position >= 1",
+            name="ck_recommendations_valid_rank",
+        ),
+
+        CheckConstraint(
+            """
+            status IN (
+                'generated',
+                'presented',
+                'clicked',
+                'dismissed',
+                'expired'
+            )
+            """,
+            name="ck_recommendations_valid_status",
+        ),
+
+        CheckConstraint(
+            "length(trim(reason)) > 0",
+            name="ck_recommendations_reason_nonempty",
+        ),
+
+        CheckConstraint(
+            "length(trim(algorithm_version)) > 0",
+            name="ck_recommendations_algorithm_version_nonempty",
+        ),
+
+        CheckConstraint(
+            "expires_at IS NULL OR expires_at > generated_at",
+            name="ck_recommendations_valid_expiration",
+        ),
+
+        CheckConstraint(
+            "jsonb_typeof(metadata) = 'object'",
+            name="ck_recommendations_metadata_object",
+        ),
+
+        Index(
+            "ix_recommendations_user_id",
+            "user_id",
+        ),
+
+        Index(
+            "ix_recommendations_resource_id",
+            "resource_id",
+        ),
+
+        Index(
+            "ix_recommendations_status",
+            "status",
+        ),
+
+        Index(
+            "ix_recommendations_score",
+            "score",
+        ),
+
+        Index(
+            "ix_recommendations_generated_at",
+            "generated_at",
+        ),
+
+        Index(
+            "ix_recommendations_user_rank",
+            "user_id",
+            "rank_position",
+        ),
+
+        Index(
+            "ix_recommendations_user_status",
+            "user_id",
+            "status",
+        ),
+    )
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("id", uuid4())
+        kwargs.setdefault("recommendation_metadata", {})
+        kwargs.setdefault("status", "generated")
+        kwargs.setdefault("algorithm_version", "v1")
+
+        super().__init__(**kwargs)
+
+    def __repr__(self) -> str:
+        return (
+            f"<Recommendation("
+            f"id={self.id}, "
+            f"user_id={self.user_id}, "
+            f"resource_id={self.resource_id}, "
+            f"score={self.score}, "
+            f"status={self.status!r})>"
+        )
+
+
+==================================================
+FILE: app/schemas/recommendations.py
+==================================================
+
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal
+from enum import Enum
+from uuid import UUID
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+
+# ============================================================
+# ENUMS
+# ============================================================
+
+
+class RecommendationType(str, Enum):
+    PERSONALIZED = "personalized"
+    TRENDING = "trending"
+    RELATED = "related"
+    POPULAR = "popular"
+    CONTINUE_LEARNING = "continue_learning"
+
+
+class ResourceType(str, Enum):
+    VIDEO = "video"
+    ARTICLE = "article"
+    NOTES = "notes"
+    COURSE = "course"
+    DOCUMENTATION = "documentation"
+    TUTORIAL = "tutorial"
+    WEBSITE = "website"
+    BOOK = "book"
+
+
+class DifficultyLevel(str, Enum):
+    BEGINNER = "beginner"
+    INTERMEDIATE = "intermediate"
+    ADVANCED = "advanced"
+
+
+class RecommendationStatus(str, Enum):
+    GENERATED = "generated"
+    PRESENTED = "presented"
+    CLICKED = "clicked"
+    DISMISSED = "dismissed"
+    EXPIRED = "expired"
+
+
+class InteractionType(str, Enum):
+    VIEW = "view"
+    CLICK = "click"
+    SAVE = "save"
+    RATE = "rate"
+    COMPLETE = "complete"
+
+
+# ============================================================
+# BASE SCHEMA
+# ============================================================
+
+
+class RecommendationBaseSchema(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+
+# ============================================================
+# RECOMMENDATION GENERATION REQUEST
+# ============================================================
+
+
+class RecommendationRequest(RecommendationBaseSchema):
+    """
+    Public request schema for generating recommendations.
+
+    User identity is deliberately excluded.
+    The authenticated user must be obtained from
+    the authentication dependency.
+    """
+
+    query: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=1000,
+        description="Optional topic or learning query.",
+    )
+
+    subject: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+    )
+
+    resource_types: list[ResourceType] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=8,
+    )
+
+    difficulty_level: DifficultyLevel | None = None
+
+    language: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=30,
+    )
+
+    recommendation_type: RecommendationType = Field(
+        default=RecommendationType.PERSONALIZED,
+    )
+
+    limit: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+    )
+
+    exclude_completed: bool = Field(
+        default=True,
+    )
+
+    @field_validator("query", "subject", "language")
+    @classmethod
+    def normalize_optional_strings(
+        cls,
+        value: str | None,
+    ) -> str | None:
+
+        if value is None:
+            return None
+
+        value = value.strip()
+
+        if not value:
+            raise ValueError(
+                "Value cannot contain only whitespace."
+            )
+
+        return value
+
+    @field_validator("resource_types")
+    @classmethod
+    def validate_resource_types(
+        cls,
+        value: list[ResourceType] | None,
+    ) -> list[ResourceType] | None:
+
+        if value is None:
+            return None
+
+        if len(value) != len(set(value)):
+            raise ValueError(
+                "Duplicate resource types are not allowed."
+            )
+
+        return value
+
+    @field_validator("language")
+    @classmethod
+    def normalize_language(
+        cls,
+        value: str | None,
+    ) -> str | None:
+
+        if value is None:
+            return None
+
+        return value.lower()
+
+
+# ============================================================
+# USER LEARNING CONTEXT
+# ============================================================
+
+
+class InteractionSummary(RecommendationBaseSchema):
+    """
+    Internal summary of a user's resource interactions.
+    """
+
+    resource_id: UUID
+
+    interaction_type: InteractionType
+
+    rating: int | None = Field(
+        default=None,
+        ge=1,
+        le=5,
+    )
+
+    duration_seconds: int | None = Field(
+        default=None,
+        ge=0,
+    )
+
+    occurred_at: datetime
+
+    @model_validator(mode="after")
+    def validate_rating(self):
+
+        if self.interaction_type == InteractionType.RATE:
+            if self.rating is None:
+                raise ValueError(
+                    "Rating is required for rate interactions."
+                )
+
+        elif self.rating is not None:
+            raise ValueError(
+                "Rating is only permitted for rate interactions."
+            )
+
+        return self
+
+
+class LearningContext(RecommendationBaseSchema):
+    """
+    Internal representation of the authenticated user's
+    learning preferences and interaction history.
+    """
+
+    user_id: UUID
+
+    preferred_language: str | None = None
+
+    education_level: str | None = None
+
+    preferred_subjects: list[str] = Field(
+        default_factory=list,
+        max_length=50,
+    )
+
+    learning_goals: list[str] = Field(
+        default_factory=list,
+        max_length=50,
+    )
+
+    recent_interactions: list[InteractionSummary] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+
+    @field_validator(
+        "preferred_subjects",
+        "learning_goals",
+    )
+    @classmethod
+    def normalize_string_lists(
+        cls,
+        values: list[str],
+    ) -> list[str]:
+
+        normalized = []
+
+        for value in values:
+
+            value = value.strip()
+
+            if not value:
+                raise ValueError(
+                    "List values cannot be empty."
+                )
+
+            normalized.append(value)
+
+        return list(dict.fromkeys(normalized))
+
+
+# ============================================================
+# RESOURCE CANDIDATE
+# ============================================================
+
+
+class RecommendationCandidate(RecommendationBaseSchema):
+    """
+    Normalized resource representation used internally
+    by recommendation services.
+    """
+
+    resource_id: UUID
+
+    title: str = Field(
+        min_length=1,
+        max_length=255,
+    )
+
+    description: str | None = None
+
+    resource_type: ResourceType
+
+    url: str = Field(
+        min_length=1,
+        max_length=2048,
+    )
+
+    provider: str | None = None
+
+    subject: str | None = None
+
+    language: str | None = None
+
+    difficulty_level: DifficultyLevel | None = None
+
+    estimated_duration_minutes: int | None = Field(
+        default=None,
+        ge=0,
+    )
+
+    quality_score: Decimal | None = Field(
+        default=None,
+        ge=Decimal("0"),
+        le=Decimal("5"),
+        max_digits=4,
+        decimal_places=2,
+    )
+
+    category_slugs: list[str] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+
+    published_at: datetime | None = None
+
+    is_active: bool
+
+    @field_validator("title", "url")
+    @classmethod
+    def validate_required_strings(
+        cls,
+        value: str,
+    ) -> str:
+
+        value = value.strip()
+
+        if not value:
+            raise ValueError(
+                "Value cannot be empty."
+            )
+
+        return value
+
+    @field_validator("category_slugs")
+    @classmethod
+    def normalize_categories(
+        cls,
+        values: list[str],
+    ) -> list[str]:
+
+        normalized = [
+            value.strip().lower()
+            for value in values
+            if value.strip()
+        ]
+
+        return list(dict.fromkeys(normalized))
+
+
+# ============================================================
+# SCORING WEIGHTS
+# ============================================================
+
+
+class RecommendationWeights(RecommendationBaseSchema):
+    """
+    Configurable weights for the rule-based scoring engine.
+    """
+
+    topic_relevance: float = Field(
+        default=0.35,
+        ge=0,
+        le=1,
+    )
+
+    learning_level: float = Field(
+        default=0.20,
+        ge=0,
+        le=1,
+    )
+
+    prerequisite_compatibility: float = Field(
+        default=0.15,
+        ge=0,
+        le=1,
+    )
+
+    resource_quality: float = Field(
+        default=0.15,
+        ge=0,
+        le=1,
+    )
+
+    learning_objective: float = Field(
+        default=0.10,
+        ge=0,
+        le=1,
+    )
+
+    freshness: float = Field(
+        default=0.05,
+        ge=0,
+        le=1,
+    )
+
+    @model_validator(mode="after")
+    def validate_weight_total(self):
+
+        total = sum(
+            (
+                self.topic_relevance,
+                self.learning_level,
+                self.prerequisite_compatibility,
+                self.resource_quality,
+                self.learning_objective,
+                self.freshness,
+            )
+        )
+
+        if abs(total - 1.0) > 1e-9:
+            raise ValueError(
+                "Recommendation weights must sum to 1.0."
+            )
+
+        return self
+
+
+# ============================================================
+# SCORING BREAKDOWN
+# ============================================================
+
+
+class RecommendationScoreBreakdown(
+    RecommendationBaseSchema
+):
+    """
+    Individual normalized scoring components.
+
+    These values represent actual scoring results,
+    not the configured weights.
+    """
+
+    topic_relevance: float = Field(
+        ge=0,
+        le=1,
+    )
+
+    learning_level: float = Field(
+        ge=0,
+        le=1,
+    )
+
+    prerequisite_compatibility: float = Field(
+        ge=0,
+        le=1,
+    )
+
+    resource_quality: float = Field(
+        ge=0,
+        le=1,
+    )
+
+    learning_objective: float = Field(
+        ge=0,
+        le=1,
+    )
+
+    freshness: float = Field(
+        ge=0,
+        le=1,
+    )
+
+
+class RecommendationScoringResult(
+    RecommendationBaseSchema
+):
+    """
+    Complete scoring output for an individual resource.
+    """
+
+    resource_id: UUID
+
+    score: float = Field(
+        ge=0,
+        le=1,
+    )
+
+    breakdown: RecommendationScoreBreakdown
+
+    weights: RecommendationWeights
+
+    algorithm_version: str = Field(
+        min_length=1,
+        max_length=50,
+    )
+
+
+# ============================================================
+# SCORED RECOMMENDATION
+# ============================================================
+
+
+class ScoredRecommendation(RecommendationBaseSchema):
+    """
+    Internal recommendation result after scoring and ranking.
+    """
+
+    resource: RecommendationCandidate
+
+    score: float = Field(
+        ge=0,
+        le=1,
+    )
+
+    rank_position: int = Field(
+        ge=1,
+    )
+
+    reason: str = Field(
+        min_length=1,
+        max_length=2000,
+    )
+
+    breakdown: RecommendationScoreBreakdown
+
+    recommendation_type: RecommendationType
+
+    algorithm_version: str = Field(
+        min_length=1,
+        max_length=50,
+    )
+
+
+# ============================================================
+# RECOMMENDATION RESPONSE
+# ============================================================
+
+
+class RecommendedResourceResponse(
+    RecommendationBaseSchema
+):
+    """
+    Resource information exposed in recommendation responses.
+    """
+
+    id: UUID
+
+    title: str
+
+    description: str | None = None
+
+    resource_type: ResourceType
+
+    url: str
+
+    provider: str | None = None
+
+    subject: str | None = None
+
+    language: str | None = None
+
+    difficulty_level: DifficultyLevel | None = None
+
+    estimated_duration_minutes: int | None = None
+
+    quality_score: Decimal | None = None
+
+
+class RecommendationResponse(
+    RecommendationBaseSchema
+):
+    """
+    Persisted recommendation response.
+    """
+
+    id: UUID
+
+    resource_id: UUID
+
+    recommendation_type: RecommendationType
+
+    score: Decimal = Field(
+        ge=Decimal("0"),
+        le=Decimal("1"),
+        max_digits=5,
+        decimal_places=4,
+    )
+
+    rank_position: int = Field(
+        ge=1,
+    )
+
+    reason: str = Field(
+        min_length=1,
+    )
+
+    status: RecommendationStatus
+
+    algorithm_version: str
+
+    recommendation_metadata: dict = Field(
+        default_factory=dict,
+    )
+
+    generated_at: datetime
+
+    expires_at: datetime | None = None
+
+    resource: RecommendedResourceResponse
+
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+        from_attributes=True,
+    )
+
+    @model_validator(mode="after")
+    def validate_resource_relationship(self):
+
+        if self.resource_id != self.resource.id:
+            raise ValueError(
+                "Recommendation resource ID must match "
+                "the nested resource ID."
+            )
+
+        return self
+
+
+# ============================================================
+# RECOMMENDATION LIST RESPONSE
+# ============================================================
+
+
+class RecommendationListResponse(
+    RecommendationBaseSchema
+):
+    """
+    Paginated-style recommendation response.
+
+    Pagination metadata is kept explicit so that
+    cursor-based pagination can be introduced later.
+    """
+
+    recommendations: list[RecommendationResponse]
+
+    total_results: int = Field(
+        ge=0,
+    )
+
+    algorithm_version: str
+
+    @model_validator(mode="after")
+    def validate_result_count(self):
+
+        if self.total_results != len(self.recommendations):
+            raise ValueError(
+                "total_results must equal the number "
+                "of returned recommendations."
+            )
+
+        ranks = [
+            recommendation.rank_position
+            for recommendation in self.recommendations
+        ]
+
+        if len(ranks) != len(set(ranks)):
+            raise ValueError(
+                "Recommendation ranks must be unique."
+            )
+
+        return self
+
+
+==================================================
+FILE: app/schemas/content_recommendations.py
+==================================================
+
+from __future__ import annotations
+
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ContentRecommendationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(
+        min_length=2,
+        max_length=2000,
+    )
+
+    subject: str | None = Field(
+        default=None,
+        max_length=100,
+    )
+
+    language: str | None = Field(
+        default=None,
+        max_length=30,
+    )
+
+    difficulty_level: str | None = Field(
+        default=None,
+        max_length=30,
+    )
+
+    resource_types: list[str] = Field(
+        default_factory=list,
+        max_length=8,
+    )
+
+    limit: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+    )
+
+    minimum_similarity: float = Field(
+        default=0.30,
+        ge=-1.0,
+        le=1.0,
+    )
+
+    exclude_completed: bool = True
+
+
+class ContentRecommendationItem(BaseModel):
+    resource_id: UUID
+    title: str
+    description: str | None = None
+    resource_type: str
+    subject: str | None = None
+    language: str | None = None
+    difficulty_level: str | None = None
+    url: str | None = None
+
+    similarity_score: float = Field(
+        ge=-1.0,
+        le=1.0,
+    )
+
+    content_score: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    matched_topics: list[str] = Field(
+        default_factory=list,
+    )
+
+    matched_keywords: list[str] = Field(
+        default_factory=list,
+    )
+
+    matched_objectives: list[str] = Field(
+        default_factory=list,
+    )
+
+    explanation: str
+
+
+class ContentRecommendationResponse(BaseModel):
+    query: str
+
+    total_results: int
+
+    recommendations: list[ContentRecommendationItem]
+
+    algorithm_version: str
+
+    status: str = "success"
+
+
+==================================================
+FILE: app/schemas/recommendation_api.py
+==================================================
+
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+)
+
+from app.schemas.recommendation_explanation import (
+    RecommendationExplanation,
+)
+
+
+class RecommendedResourceAPIResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+
+    title: str
+
+    description: str | None = None
+
+    resource_type: str
+
+    url: str
+
+    provider: str | None = None
+
+    subject: str | None = None
+
+    language: str | None = None
+
+    difficulty_level: str | None = None
+
+    estimated_duration_minutes: int | None = None
+
+    quality_score: float | None = None
+
+
+class RecommendationItemAPIResponse(BaseModel):
+    recommendation_id: UUID
+
+    resource: RecommendedResourceAPIResponse
+
+    explanation: RecommendationExplanation
+
+    status: str
+
+    generated_at: datetime
+
+
+class RecommendationGenerationAPIResponse(BaseModel):
+    request_id: UUID
+
+    total_results: int
+
+    recommendations: list[RecommendationItemAPIResponse]
+
+    generated_at: datetime
+
+    algorithm_version: str
+
+
+class RecommendationHistoryAPIResponse(BaseModel):
+    total_results: int
+
+    recommendations: list[RecommendationItemAPIResponse]
+
+
+from pydantic import field_validator
+
+
+class RecommendationFeedbackCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    feedback_type: str
+
+    comment: str | None = Field(
+        default=None,
+        max_length=2000,
+    )
+
+    @field_validator("feedback_type")
+    @classmethod
+    def validate_feedback_type(cls, value):
+        allowed = {
+            "helpful",
+            "not_helpful",
+            "irrelevant",
+        }
+
+        if value not in allowed:
+            raise ValueError("Invalid feedback type.")
+
+        return value.strip()
+
+        
+
+
+class RecommendationFeedbackAPIResponse(BaseModel):
+    id: UUID
+
+    recommendation_id: UUID
+
+    feedback_type: str
+
+    comment: str | None = None
+
+    created_at: datetime
+
+
+==================================================
+FILE: app/api/recommendations.py
+==================================================
+
+from uuid import UUID
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    status,
+)
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
+
+from app.api.dependencies import get_current_user
+
+from app.database.session import get_db
+
+from app.models.user import User
+from app.models.recommendation import Recommendation
+from app.models.recommendation_feedback import (
+    RecommendationFeedback,
+)
+
+from app.schemas.recommendations import (
+    RecommendationRequest,
+)
+
+from app.schemas.recommendation_api import (
+    RecommendationGenerationAPIResponse,
+    RecommendationHistoryAPIResponse,
+    RecommendationItemAPIResponse,
+    RecommendedResourceAPIResponse,
+    RecommendationExplanation,
+    RecommendationFeedbackCreate,
+    RecommendationFeedbackAPIResponse,
+)
+
+from app.services.recommendations.recommendation_service import (
+    RecommendationApplicationService,
+)
+
+
+router = APIRouter()
+
+recommendation_service = RecommendationApplicationService()
+
+
+@router.post(
+    "/generate",
+    response_model=RecommendationGenerationAPIResponse,
+    status_code=status.HTTP_200_OK,
+)
+def generate_recommendations(
+    request: RecommendationRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        result = recommendation_service.generate(
+            db=db,
+            user=current_user,
+            request=request,
+        )
+
+        response_items = []
+
+        for record, resource, explanation in result["recommendations"]:
+
+            record.status = "presented"
+
+            response_items.append(
+                RecommendationItemAPIResponse(
+                    recommendation_id=record.id,
+                    resource=RecommendedResourceAPIResponse(
+                        id=resource.id,
+                        title=resource.title,
+                        description=resource.description,
+                        resource_type=resource.resource_type,
+                        url=resource.url,
+                        provider=resource.provider,
+                        subject=resource.subject,
+                        language=resource.language,
+                        difficulty_level=resource.difficulty_level,
+                        estimated_duration_minutes=(
+                            resource.estimated_duration_minutes
+                        ),
+                        quality_score=(
+                            float(resource.quality_score)
+                            if resource.quality_score is not None
+                            else None
+                        ),
+                    ),
+                    explanation=explanation,
+                    status=record.status,
+                    generated_at=record.generated_at,
+                )
+            )
+
+        db.commit()
+
+        return RecommendationGenerationAPIResponse(
+            request_id=result["request_id"],
+            total_results=len(response_items),
+            recommendations=response_items,
+            generated_at=result["generated_at"],
+            algorithm_version=result["algorithm_version"],
+        )
+
+    except Exception as exc:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Recommendation generation failed.",
+        ) from exc
+
+
+@router.get(
+    "/",
+    response_model=RecommendationHistoryAPIResponse,
+)
+def get_recommendations(
+    limit: int = 20,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not 1 <= limit <= 100:
+        raise HTTPException(
+            status_code=400,
+            detail="Limit must be between 1 and 100.",
+        )
+
+    if offset < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Offset cannot be negative.",
+        )
+
+    statement = (
+        select(Recommendation)
+        .where(
+            Recommendation.user_id == current_user.id
+        )
+        .options(
+            selectinload(Recommendation.resource)
+        )
+        .order_by(
+            Recommendation.generated_at.desc(),
+            Recommendation.rank_position.asc(),
+        )
+        .offset(offset)
+        .limit(limit)
+    )
+
+    records = list(
+        db.scalars(statement).all()
+    )
+
+    response_items = []
+
+    for record in records:
+
+        metadata = record.recommendation_metadata or {}
+
+        explanation_data = metadata.get("explanation")
+
+        if not explanation_data:
+            continue
+
+        explanation = RecommendationExplanation.model_validate(
+            explanation_data
+        )
+
+        resource = record.resource
+
+        response_items.append(
+            RecommendationItemAPIResponse(
+                recommendation_id=record.id,
+                resource=RecommendedResourceAPIResponse(
+                    id=resource.id,
+                    title=resource.title,
+                    description=resource.description,
+                    resource_type=resource.resource_type,
+                    url=resource.url,
+                    provider=resource.provider,
+                    subject=resource.subject,
+                    language=resource.language,
+                    difficulty_level=resource.difficulty_level,
+                    estimated_duration_minutes=(
+                        resource.estimated_duration_minutes
+                    ),
+                    quality_score=(
+                        float(resource.quality_score)
+                        if resource.quality_score is not None
+                        else None
+                    ),
+                ),
+                explanation=explanation,
+                status=record.status,
+                generated_at=record.generated_at,
+            )
+        )
+
+    return RecommendationHistoryAPIResponse(
+        total_results=len(response_items),
+        recommendations=response_items,
+    )
+
+
+@router.post(
+    "/{recommendation_id}/feedback",
+    response_model=RecommendationFeedbackAPIResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def submit_recommendation_feedback(
+    recommendation_id: UUID,
+    request: RecommendationFeedbackCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    recommendation = db.scalar(
+        select(Recommendation).where(
+            Recommendation.id == recommendation_id,
+            Recommendation.user_id == current_user.id,
+        )
+    )
+
+    if recommendation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recommendation not found.",
+        )
+
+    existing_feedback = db.scalar(
+        select(RecommendationFeedback).where(
+            RecommendationFeedback.recommendation_id
+            == recommendation_id
+        )
+    )
+
+    if existing_feedback is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Feedback has already been submitted.",
+        )
+
+    feedback = RecommendationFeedback(
+        recommendation_id=recommendation_id,
+        feedback_type=request.feedback_type,
+        comment=request.comment,
+    )
+
+    db.add(feedback)
+
+    try:
+        db.commit()
+        db.refresh(feedback)
+
+    except Exception as exc:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to save recommendation feedback.",
+        ) from exc
+
+    return RecommendationFeedbackAPIResponse(
+        id=feedback.id,
+        recommendation_id=feedback.recommendation_id,
+        feedback_type=feedback.feedback_type,
+        comment=feedback.comment,
+        created_at=feedback.created_at,
+    )
+
+
+==================================================
+FILE: app/api/content_recommendations.py
+==================================================
+
+from __future__ import annotations
+
+import logging
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    status,
+)
+
+from sqlalchemy.orm import Session
+
+from app.database.session import get_db
+
+from app.schemas.content_recommendations import (
+    ContentRecommendationRequest,
+    ContentRecommendationResponse,
+)
+
+from app.services.recommendations.content_based.recommendation_service import (
+    ContentBasedRecommendationService,
+    ContentRecommendationServiceError,
+)
+
+from app.api.dependencies import get_current_user
+
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(
+    prefix="/api/v1/recommendations",
+    tags=["Content-Based Recommendations"],
+)
+
+
+def get_content_recommendation_service():
+
+    raise NotImplementedError(
+        "Configure the content recommendation service "
+        "dependency before enabling this endpoint."
+    )
+
+
+@router.post(
+    "/content-based",
+    response_model=ContentRecommendationResponse,
+    status_code=status.HTTP_200_OK,
+)
+def generate_content_recommendations(
+    request: ContentRecommendationRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    service: ContentBasedRecommendationService = Depends(
+        get_content_recommendation_service
+    ),
+):
+
+    try:
+
+        return service.recommend(
+            db=db,
+            user_id=current_user.id,
+            request=request,
+        )
+
+    except ContentRecommendationServiceError as exc:
+
+        logger.exception(
+            "Content recommendation generation failed."
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to generate recommendations.",
+        ) from exc
+
+
+==================================================
+FILE: app/services/recommendations/recommendation_service.py
+==================================================
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from uuid import UUID, uuid4
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
+
+from app.models.study_resource import StudyResource
+from app.models.user import User
+from app.models.user_resource_interaction import (
+    UserResourceInteraction,
+)
+from app.models.recommendation import Recommendation
+
+from app.schemas.recommendations import (
+    RecommendationRequest,
+)
+
+from app.services.recommendations.resource_classifier import (
+    ResourceClassifier,
+)
+
+from app.services.recommendations.context_builder import (
+    LearningContextBuilder,
+)
+
+from app.services.recommendations.scoring_service import (
+    RecommendationScoringService,
+)
+
+from app.services.recommendations.filtering_service import (
+    RecommendationFilteringService,
+)
+
+from app.services.recommendations.ranking_service import (
+    RecommendationRankingService,
+)
+
+from app.services.recommendations.explanation_service import (
+    RecommendationExplanationService,
+)
+
+
+class RecommendationServiceError(Exception):
+    pass
+
+
+class RecommendationApplicationService:
+    """
+    Application-level orchestration for ScholarAI recommendations.
+
+    Coordinates classification, context construction, scoring,
+    filtering, ranking, explanations and persistence.
+    """
+
+    def __init__(
+        self,
+        classifier=None,
+        context_builder=None,
+        scoring_service=None,
+        filtering_service=None,
+        ranking_service=None,
+        explanation_service=None,
+    ):
+        self.classifier = (
+            classifier or ResourceClassifier()
+        )
+
+        self.context_builder = (
+            context_builder or LearningContextBuilder()
+        )
+
+        self.scoring_service = (
+            scoring_service or RecommendationScoringService()
+        )
+
+        self.filtering_service = (
+            filtering_service or RecommendationFilteringService()
+        )
+
+        self.ranking_service = (
+            ranking_service or RecommendationRankingService()
+        )
+
+        self.explanation_service = (
+            explanation_service
+            or RecommendationExplanationService()
+        )
+
+    def _load_interactions(
+        self,
+        db: Session,
+        user_id: UUID,
+    ):
+        statement = (
+            select(UserResourceInteraction)
+            .where(
+                UserResourceInteraction.user_id == user_id
+            )
+            .order_by(
+                UserResourceInteraction.occurred_at.desc()
+            )
+            .limit(20)
+        )
+
+        return list(db.scalars(statement).all())
+
+    def _load_resources(
+        self,
+        db: Session,
+    ):
+        statement = (
+            select(StudyResource)
+            .where(
+                StudyResource.is_active.is_(True)
+            )
+            .options(
+                selectinload(StudyResource.categories)
+            )
+            .order_by(
+                StudyResource.created_at.desc()
+            )
+        )
+
+        return list(db.scalars(statement).all())
+
+    def generate(
+        self,
+        db: Session,
+        user: User,
+        request: RecommendationRequest,
+    ):
+        """
+        Generate and persist personalized recommendations.
+
+        All persistence occurs inside one transaction.
+        """
+
+        if not isinstance(user, User):
+            raise TypeError("Expected authenticated User.")
+
+        if not isinstance(request, RecommendationRequest):
+            raise TypeError("Expected RecommendationRequest.")
+
+        try:
+            interactions = self._load_interactions(
+                db,
+                user.id,
+            )
+
+            resources = self._load_resources(db)
+
+            context = self.context_builder.build(
+                user=user,
+                preferences=user.preferences,
+                request=request,
+                interactions=interactions,
+            )
+
+            classified_resources = [
+                self.classifier.classify(resource)
+                for resource in resources
+            ]
+
+            scored_candidates = []
+
+            for resource, classification in zip(
+                resources,
+                classified_resources,
+            ):
+                scoring_result = self.scoring_service.score(
+                    classification,
+                    context,
+                )
+
+                if scoring_result is None:
+                    continue
+
+                scored_candidates.append(
+                    (
+                        classification,
+                        scoring_result,
+                    )
+                )
+
+            filtered_candidates = self.filtering_service.filter(
+                candidates=scored_candidates,
+                request=request,
+                interactions=interactions,
+            )
+
+            ranked = self.ranking_service.rank(
+                candidates=filtered_candidates,
+                limit=request.limit,
+            )
+
+            explanations = self.explanation_service.explain_many(
+                ranked_recommendations=ranked,
+                context=context,
+            )
+
+            recommendation_records = []
+
+            for ranked_item, explanation in zip(
+                ranked,
+                explanations,
+            ):
+                resource = ranked_item.resource
+
+                database_resource = next(
+                    (
+                        item
+                        for item in resources
+                        if str(item.id) == str(resource.resource_id)
+                    ),
+                    None,
+                )
+
+                if database_resource is None:
+                    continue
+
+                record = Recommendation(
+                    user_id=user.id,
+                    resource_id=database_resource.id,
+                    recommendation_type=request.recommendation_type.value,
+                    score=ranked_item.score,
+                    rank_position=ranked_item.rank_position,
+                    reason=explanation.reason,
+                    status="generated",
+                    algorithm_version=ranked_item.algorithm_version,
+                    recommendation_metadata={
+                        "explanation": explanation.model_dump(mode="json"),
+                        "explanation_version": explanation.explanation_version,
+                        "context_version": context.context_version,
+                    },
+                )
+
+                db.add(record)
+
+                recommendation_records.append(
+                    (record, database_resource, explanation)
+                )
+
+            db.flush()
+
+            return {
+                "request_id": uuid4(),
+                "total_results": len(recommendation_records),
+                "recommendations": recommendation_records,
+                "generated_at": datetime.now(timezone.utc),
+                "algorithm_version": self.scoring_service.ALGORITHM_VERSION,
+            }
+
+        except Exception:
+            db.rollback()
+            raise
+
+
+==================================================
+FILE: app/services/recommendations/content_based/recommendation_service.py
+==================================================
+
+from __future__ import annotations
+
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.models.user_resource_interaction import UserResourceInteraction
+
+from app.schemas.content_recommendations import (
+    ContentRecommendationRequest,
+    ContentRecommendationResponse,
+    ContentRecommendationItem,
+)
+
+from app.services.recommendations.content_based.query_context import (
+    ContentQueryFilters,
+)
+
+
+class ContentRecommendationServiceError(Exception):
+    """Base recommendation service error."""
+
+
+class ContentBasedRecommendationService:
+
+    ALGORITHM_VERSION = "content-based-v1"
+
+    def __init__(
+        self,
+        query_context_service,
+        similarity_service,
+        feature_extractor,
+        scoring_service,
+        filtering_service,
+        ranking_service,
+    ):
+        self.query_context_service = query_context_service
+        self.similarity_service = similarity_service
+        self.feature_extractor = feature_extractor
+        self.scoring_service = scoring_service
+        self.filtering_service = filtering_service
+        self.ranking_service = ranking_service
+
+    def _load_interactions(
+        self,
+        db: Session,
+        user_id: UUID,
+    ):
+        """
+        Load recent user interactions.
+
+        A missing database session returns an empty interaction
+        collection for isolated unit tests. Production API calls
+        should always provide a valid database session.
+        """
+
+        if db is None:
+            return []
+
+        statement = (
+            select(UserResourceInteraction)
+            .where(
+                UserResourceInteraction.user_id == user_id
+            )
+            .order_by(
+                UserResourceInteraction.occurred_at.desc()
+            )
+            .limit(20)
+        )
+
+        return list(db.scalars(statement).all())
+
+    def _build_context(
+        self,
+        db: Session,
+        user_id: UUID,
+        request: ContentRecommendationRequest,
+    ):
+        filters = ContentQueryFilters(
+            subject=request.subject,
+            language=request.language,
+            difficulty_level=request.difficulty_level,
+            resource_types=tuple(request.resource_types),
+            exclude_completed=request.exclude_completed,
+        )
+
+        return self.query_context_service.build(
+            db=db,
+            user_id=user_id,
+            query_text=request.query,
+            filters=filters,
+        )
+
+    def _retrieve_candidates(
+        self,
+        db: Session,
+        context,
+        request: ContentRecommendationRequest,
+    ):
+        return self.similarity_service.find_similar_resources(
+            db=db,
+            query_vector=context.query_embedding,
+            limit=min(request.limit * 5, 100),
+            min_similarity=request.minimum_similarity,
+            subject=request.subject,
+            language=request.language,
+        )
+
+    def _score_candidates(
+        self,
+        similarity_results,
+        context,
+    ):
+        candidates = []
+
+        for result in similarity_results:
+            resource = result.resource
+
+            features = self.feature_extractor.extract(
+                resource
+            )
+
+            if not self._has_usable_features(features):
+                continue
+
+            scoring_result = self.scoring_service.score(
+                reference_features=context,
+                candidate_features=features,
+            )
+
+            if scoring_result is None:
+                continue
+
+            candidates.append(
+                (features, scoring_result)
+            )
+
+        return candidates
+
+    @staticmethod
+    def _has_usable_features(features):
+        return bool(
+            features.tokens
+            or features.topics
+            or features.keywords
+            or features.learning_objectives
+        )
+
+    def _filter_candidates(
+        self,
+        candidates,
+        request: ContentRecommendationRequest,
+        interactions,
+    ):
+        from app.services.recommendations.content_based.candidate_models import (
+            ContentBasedCandidate,
+        )
+
+        from app.services.recommendations.content_based.filtering_service import (
+            ContentFilterCriteria,
+        )
+
+        wrapped_candidates = []
+
+        for features, scoring_result in candidates:
+            wrapped_candidates.append(
+                ContentBasedCandidate(
+                    features=features,
+                    scoring_result=scoring_result,
+                    is_active=True,
+                    quality_score=None,
+                )
+            )
+
+        criteria = ContentFilterCriteria(
+            resource_types=tuple(request.resource_types),
+            subjects=(
+                (request.subject,)
+                if request.subject
+                else ()
+            ),
+            languages=(
+                (request.language,)
+                if request.language
+                else ()
+            ),
+            difficulty_levels=(
+                (request.difficulty_level,)
+                if request.difficulty_level
+                else ()
+            ),
+            minimum_score=0.0,
+            excluded_resource_ids=(),
+            exclude_inactive=True,
+        )
+
+        return self.filtering_service.filter(
+            candidates=wrapped_candidates,
+            criteria=criteria,
+        )
+
+    def _rank_candidates(
+        self,
+        candidates,
+        limit: int,
+    ):
+        return self.ranking_service.rank(
+            candidates=candidates,
+            limit=limit,
+        )
+
+    @staticmethod
+    def _build_recommendation_item(
+        ranked,
+        similarity_results,
+    ):
+        candidate = ranked.candidate
+
+        features = candidate.features
+        score = candidate.scoring_result
+
+        similarity_by_id = {
+            result.resource_id: result
+            for result in similarity_results
+        }
+
+        similarity_result = similarity_by_id.get(
+            features.resource_id
+        )
+
+        similarity_score = (
+            similarity_result.similarity_score
+            if similarity_result is not None
+            else 0.0
+        )
+
+        resource = (
+            similarity_result.resource
+            if similarity_result is not None
+            else None
+        )
+
+        return ContentRecommendationItem(
+            resource_id=features.resource_id,
+            title=features.title,
+            description=getattr(
+                resource,
+                "description",
+                None,
+            ),
+            resource_type=features.resource_type,
+            subject=features.subject,
+            language=features.language,
+            difficulty_level=features.difficulty,
+            url=getattr(
+                resource,
+                "url",
+                None,
+            ),
+            similarity_score=similarity_score,
+            content_score=score.score,
+            confidence=score.confidence,
+            matched_topics=list(score.matched_topics),
+            matched_keywords=list(score.matched_keywords),
+            matched_objectives=list(score.matched_objectives),
+            explanation=(
+                "Recommended based on the relevance of "
+                "the resource's content to your learning query."
+            ),
+        )
+
+    def recommend(
+        self,
+        db: Session,
+        user_id: UUID,
+        request: ContentRecommendationRequest,
+    ) -> ContentRecommendationResponse:
+
+        if not isinstance(user_id, UUID):
+            raise ValueError("Invalid user ID.")
+
+        if not isinstance(
+            request,
+            ContentRecommendationRequest,
+        ):
+            raise TypeError(
+                "Expected ContentRecommendationRequest."
+            )
+
+        try:
+            interactions = self._load_interactions(
+                db=db,
+                user_id=user_id,
+            )
+
+            context = self._build_context(
+                db=db,
+                user_id=user_id,
+                request=request,
+            )
+
+            similarity_results = self._retrieve_candidates(
+                db=db,
+                context=context,
+                request=request,
+            )
+
+            scored_candidates = self._score_candidates(
+                similarity_results=similarity_results,
+                context=context,
+            )
+
+            filtered_candidates = self._filter_candidates(
+                candidates=scored_candidates,
+                request=request,
+                interactions=interactions,
+            )
+
+            ranked_candidates = self._rank_candidates(
+                candidates=filtered_candidates,
+                limit=request.limit,
+            )
+
+            recommendations = [
+                self._build_recommendation_item(
+                    ranked=ranked,
+                    similarity_results=similarity_results,
+                )
+                for ranked in ranked_candidates
+            ]
+
+            return ContentRecommendationResponse(
+                query=request.query,
+                total_results=len(recommendations),
+                recommendations=recommendations,
+                algorithm_version=self.ALGORITHM_VERSION,
+            )
+
+        except Exception as exc:
+            raise ContentRecommendationServiceError(
+                "Content recommendation generation failed."
+            ) from exc
+
+
+==================================================
+FILE: app/services/recommendations/content_based/query_context_service.py
+==================================================
+
+from __future__ import annotations
+
+import inspect
+
+from collections.abc import Iterable
+from uuid import UUID
+
+from app.schemas.recommendations import (
+    RecommendationRequest,
+)
+
+from app.services.recommendations.context_builder import (
+    LearningContextBuilder,
+)
+
+from app.services.recommendations.content_based.query_context import (
+    ContentQueryContext,
+    ContentQueryFilters,
+    QueryContextValidationError,
+)
+
+
+class ContentQueryContextError(Exception):
+    """Base exception for query-context operations."""
+
+
+class EmptyLearningIntentError(ContentQueryContextError):
+    """Raised when no usable learning intent exists."""
+
+
+class QueryEmbeddingError(ContentQueryContextError):
+    """Raised when query embedding generation fails."""
+
+
+class ContentQueryContextService:
+    """
+    Builds a query-aware content recommendation context.
+
+    Responsibilities:
+    - Build the user's learning context.
+    - Construct a meaningful semantic query.
+    - Generate a query embedding.
+    - Resolve effective search filters.
+    """
+
+    DEFAULT_DIMENSIONS = 1536
+
+    def __init__(
+        self,
+        embedding_service,
+        context_builder=None,
+        expected_dimensions=DEFAULT_DIMENSIONS,
+    ):
+
+        if embedding_service is None:
+
+            raise TypeError(
+                "embedding_service is required."
+            )
+
+        if (
+            isinstance(expected_dimensions, bool)
+            or not isinstance(expected_dimensions, int)
+            or expected_dimensions <= 0
+        ):
+
+            raise ValueError(
+                "expected_dimensions must be a positive integer."
+            )
+
+        self.embedding_service = embedding_service
+
+        self.context_builder = (
+            context_builder
+            or LearningContextBuilder()
+        )
+
+        self.expected_dimensions = expected_dimensions
+
+    @staticmethod
+    def _normalize_text(value):
+
+        if value is None:
+            return ""
+
+        if not isinstance(value, str):
+            return ""
+
+        return " ".join(value.split())
+
+    @staticmethod
+    def _unique(values: Iterable[str]):
+
+        result = []
+
+        seen = set()
+
+        for value in values:
+
+            normalized = (
+                ContentQueryContextService._normalize_text(
+                    value
+                )
+            )
+
+            if not normalized:
+                continue
+
+            key = normalized.casefold()
+
+            if key not in seen:
+
+                seen.add(key)
+
+                result.append(normalized)
+
+        return result
+
+    def build_query_text(
+        self,
+        request: RecommendationRequest,
+        learning_context,
+    ) -> str:
+
+        if not isinstance(
+            request,
+            RecommendationRequest,
+        ):
+
+            raise TypeError(
+                "Expected RecommendationRequest."
+            )
+
+        query_parts = []
+
+        explicit_query = self._normalize_text(
+            request.query
+        )
+
+        if explicit_query:
+            query_parts.append(explicit_query)
+
+        subject = self._normalize_text(
+            request.subject
+        )
+
+        if subject:
+            query_parts.append(
+                f"Subject: {subject}"
+            )
+
+        learning_goals = self._unique(
+            learning_context.learning_goals
+        )
+
+        if learning_goals:
+
+            query_parts.append(
+                "Learning goals: "
+                + ", ".join(learning_goals)
+            )
+
+        preferred_subjects = self._unique(
+            learning_context.preferred_subjects
+        )
+
+        if preferred_subjects:
+
+            query_parts.append(
+                "Preferred subjects: "
+                + ", ".join(preferred_subjects)
+            )
+
+        query_text = "\n".join(
+            self._unique(query_parts)
+        )
+
+        if not query_text:
+
+            raise EmptyLearningIntentError(
+                "No query, subject, learning goal or preferred subject "
+                "is available to generate a content-based recommendation."
+            )
+
+        return query_text
+
+    def build_filters(
+        self,
+        request: RecommendationRequest,
+        learning_context,
+    ) -> ContentQueryFilters:
+
+        resource_types = tuple(
+            resource_type.value
+            if hasattr(resource_type, "value")
+            else str(resource_type)
+            for resource_type in (
+                request.resource_types or []
+            )
+        )
+
+        language = (
+            request.language
+            or learning_context.preferred_language
+        )
+
+        return ContentQueryFilters(
+            subject=request.subject,
+            language=language,
+            difficulty_level=(
+                request.difficulty_level.value
+                if request.difficulty_level is not None
+                and hasattr(request.difficulty_level, "value")
+                else (
+                    str(request.difficulty_level)
+                    if request.difficulty_level is not None
+                    else None
+                )
+            ),
+            resource_types=resource_types,
+            preferred_subjects=tuple(
+                learning_context.preferred_subjects
+            ),
+            learning_goals=tuple(
+                learning_context.learning_goals
+            ),
+            exclude_completed=request.exclude_completed,
+        )
+
+    async def _embed_query(self, query_text):
+
+        try:
+
+            result = self.embedding_service.embed_query(
+                query_text
+            )
+
+            if inspect.isawaitable(result):
+                result = await result
+
+        except Exception as exc:
+
+            raise QueryEmbeddingError(
+                "Unable to generate the query embedding."
+            ) from exc
+
+        if result is None:
+
+            raise QueryEmbeddingError(
+                "Embedding provider returned no result."
+            )
+
+        vector = getattr(
+            result,
+            "vector",
+            None,
+        )
+
+        if vector is None:
+
+            raise QueryEmbeddingError(
+                "Embedding result does not contain a vector."
+            )
+
+        dimensions = getattr(
+            result,
+            "dimensions",
+            None,
+        )
+
+        provider = getattr(
+            result,
+            "provider",
+            None,
+        )
+
+        model = getattr(
+            result,
+            "model",
+            None,
+        )
+
+        if dimensions != self.expected_dimensions:
+
+            raise QueryEmbeddingError(
+                "Query embedding dimensions do not match configuration."
+            )
+
+        if len(vector) != self.expected_dimensions:
+
+            raise QueryEmbeddingError(
+                "Query embedding vector has an invalid length."
+            )
+
+        if not provider or not model:
+
+            raise QueryEmbeddingError(
+                "Embedding provider and model metadata are required."
+            )
+
+        return (
+            tuple(float(value) for value in vector),
+            provider,
+            model,
+            dimensions,
+        )
+
+    async def build(
+        self,
+        user,
+        request: RecommendationRequest,
+        interactions=(),
+    ) -> ContentQueryContext:
+
+        if user is None:
+
+            raise TypeError(
+                "An authenticated user object is required."
+            )
+
+        if not isinstance(
+            request,
+            RecommendationRequest,
+        ):
+
+            raise TypeError(
+                "Expected RecommendationRequest."
+            )
+
+        user_id = getattr(
+            user,
+            "id",
+            None,
+        )
+
+        if not isinstance(user_id, UUID):
+
+            raise TypeError(
+                "User must have a valid UUID id."
+            )
+
+        try:
+
+            learning_context = self.context_builder.build(
+                user=user,
+                preferences=getattr(
+                    user,
+                    "preferences",
+                    None,
+                ),
+                request=request,
+                interactions=interactions,
+            )
+
+            query_text = self.build_query_text(
+                request,
+                learning_context,
+            )
+
+            filters = self.build_filters(
+                request,
+                learning_context,
+            )
+
+            (
+                query_embedding,
+                provider,
+                model,
+                dimensions,
+            ) = await self._embed_query(
+                query_text
+            )
+
+            return ContentQueryContext(
+                user_id=user_id,
+                query_text=query_text,
+                query_embedding=query_embedding,
+                learning_context=learning_context,
+                filters=filters,
+                embedding_provider=provider,
+                embedding_model=model,
+                embedding_dimensions=dimensions,
+            )
+
+        except (
+            EmptyLearningIntentError,
+            QueryEmbeddingError,
+            QueryContextValidationError,
+        ):
+
+            raise
+
+        except Exception as exc:
+
+            raise ContentQueryContextError(
+                "Failed to construct content recommendation context."
+            ) from exc
+
+
+==================================================
+FILE: app/services/recommendations/content_based/similarity_service.py
+==================================================
+
+from __future__ import annotations
+
+import math
+
+from typing import Sequence
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.core.embedding_config import (
+    EmbeddingSettings,
+    get_embedding_settings,
+)
+
+from app.models.resource_embedding import (
+    ResourceEmbedding,
+    RESOURCE_EMBEDDING_PIPELINE_VERSION,
+    VECTOR_DIMENSIONS,
+)
+
+from app.models.study_resource import StudyResource
+
+from app.services.recommendations.content_based.similarity_models import (
+    ResourceSimilarityResult,
+    ResourceComparisonResult,
+)
+
+
+class ResourceSimilarityError(Exception):
+    """Base exception for resource similarity operations."""
+
+
+class ResourceSimilarityValidationError(
+    ResourceSimilarityError
+):
+    """Raised when similarity input is invalid."""
+
+
+class ResourceEmbeddingNotFoundError(
+    ResourceSimilarityError
+):
+    """Raised when a usable resource embedding is unavailable."""
+
+
+class ResourceSimilarityService:
+    """
+    Computes semantic similarity between educational resources.
+
+    Uses PostgreSQL pgvector cosine distance.
+
+    Responsibilities:
+    - Validate embedding vectors.
+    - Retrieve compatible resource embeddings.
+    - Compute cosine similarity.
+    - Find nearest educational resources.
+    - Compare two individual resources.
+    - Apply recommendation-oriented filters.
+    """
+
+    def __init__(
+        self,
+        settings: EmbeddingSettings | None = None,
+    ) -> None:
+
+        self.settings = (
+            settings or get_embedding_settings()
+        )
+
+        if self.settings.dimensions != VECTOR_DIMENSIONS:
+            raise ResourceSimilarityValidationError(
+                "Configured embedding dimensions must equal "
+                f"{VECTOR_DIMENSIONS}."
+            )
+
+    # ---------------------------------------------------------
+    # Vector validation
+    # ---------------------------------------------------------
+
+    @staticmethod
+    def validate_vector(
+        vector: Sequence[float],
+    ) -> list[float]:
+        """
+        Validate and normalize the input representation
+        of a vector for database querying.
+        """
+
+        if isinstance(vector, (str, bytes)):
+            raise ResourceSimilarityValidationError(
+                "Embedding vector must be a numeric sequence."
+            )
+
+        if not isinstance(vector, Sequence):
+            raise ResourceSimilarityValidationError(
+                "Embedding vector must be a sequence."
+            )
+
+        if len(vector) != VECTOR_DIMENSIONS:
+            raise ResourceSimilarityValidationError(
+                f"Embedding vector must contain "
+                f"{VECTOR_DIMENSIONS} dimensions."
+            )
+
+        validated = []
+
+        for value in vector:
+
+            if isinstance(value, bool):
+                raise ResourceSimilarityValidationError(
+                    "Boolean values are not valid vector elements."
+                )
+
+            try:
+                number = float(value)
+
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ResourceSimilarityValidationError(
+                    "Embedding vector contains a non-numeric value."
+                ) from exc
+
+            if not math.isfinite(number):
+                raise ResourceSimilarityValidationError(
+                    "Embedding vector contains a non-finite value."
+                )
+
+            validated.append(number)
+
+        return validated
+
+    # ---------------------------------------------------------
+    # Similarity conversion
+    # ---------------------------------------------------------
+
+    @staticmethod
+    def distance_to_similarity(
+        distance: float,
+    ) -> float:
+        """
+        Convert cosine distance into cosine similarity.
+
+        pgvector cosine distance:
+            distance = 1 - cosine_similarity
+
+        Therefore:
+            similarity = 1 - distance
+
+        The theoretical cosine similarity range is [-1, 1].
+        """
+
+        distance = float(distance)
+
+        if not math.isfinite(distance):
+            raise ResourceSimilarityValidationError(
+                "Cosine distance must be finite."
+            )
+
+        if distance < 0.0 or distance > 2.0:
+            raise ResourceSimilarityValidationError(
+                "Cosine distance must be between 0 and 2."
+            )
+
+        similarity = 1.0 - distance
+
+        return max(-1.0, min(1.0, similarity))
+
+    # ---------------------------------------------------------
+    # Embedding identity filters
+    # ---------------------------------------------------------
+
+    def _compatible_embedding_filters(self):
+        """
+        Restrict searches to compatible, current embeddings.
+        """
+
+        return (
+            ResourceEmbedding.status == "ready",
+            ResourceEmbedding.provider == self.settings.provider,
+            ResourceEmbedding.model == self.settings.model,
+            ResourceEmbedding.dimensions == VECTOR_DIMENSIONS,
+            ResourceEmbedding.pipeline_version
+            == RESOURCE_EMBEDDING_PIPELINE_VERSION,
+        )
+
+    # ---------------------------------------------------------
+    # Similar resource search
+    # ---------------------------------------------------------
+
+    def find_similar_resources(
+        self,
+        db: Session,
+        query_vector: Sequence[float],
+        limit: int = 10,
+        min_similarity: float = 0.0,
+        exclude_resource_id: UUID | None = None,
+        subject: str | None = None,
+        resource_type: str | None = None,
+        language: str | None = None,
+    ) -> list[ResourceSimilarityResult]:
+        """
+        Find educational resources closest to a query vector.
+
+        Filtering is performed by PostgreSQL before results
+        are returned to the application.
+        """
+
+        vector = self.validate_vector(query_vector)
+
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise ResourceSimilarityValidationError(
+                "Limit must be an integer."
+            )
+
+        if not 1 <= limit <= 100:
+            raise ResourceSimilarityValidationError(
+                "Limit must be between 1 and 100."
+            )
+
+        if isinstance(min_similarity, bool):
+            raise ResourceSimilarityValidationError(
+                "Minimum similarity must be numeric."
+            )
+
+        try:
+            min_similarity = float(min_similarity)
+
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ResourceSimilarityValidationError(
+                "Minimum similarity must be numeric."
+            ) from exc
+
+        if (
+            not math.isfinite(min_similarity)
+            or not -1.0 <= min_similarity <= 1.0
+        ):
+            raise ResourceSimilarityValidationError(
+                "Minimum similarity must be between -1 and 1."
+            )
+
+        distance_expression = (
+            ResourceEmbedding.embedding.cosine_distance(
+                vector
+            )
+        )
+
+        statement = (
+            select(
+                StudyResource,
+                ResourceEmbedding.id.label("embedding_id"),
+                distance_expression.label("cosine_distance"),
+            )
+            .join(
+                ResourceEmbedding,
+                ResourceEmbedding.resource_id
+                == StudyResource.id,
+            )
+            .where(
+                StudyResource.is_active.is_(True),
+                *self._compatible_embedding_filters(),
+            )
+        )
+
+        if exclude_resource_id is not None:
+
+            statement = statement.where(
+                StudyResource.id != exclude_resource_id
+            )
+
+        if subject is not None:
+
+            statement = statement.where(
+                StudyResource.subject == subject
+            )
+
+        if resource_type is not None:
+
+            statement = statement.where(
+                StudyResource.resource_type == resource_type
+            )
+
+        if language is not None:
+
+            statement = statement.where(
+                StudyResource.language == language
+            )
+
+        statement = (
+            statement
+            .order_by(distance_expression.asc())
+            .limit(limit)
+        )
+
+        rows = db.execute(statement).all()
+
+        results = []
+
+        for resource, embedding_id, distance in rows:
+
+            distance = float(distance)
+
+            similarity = self.distance_to_similarity(
+                distance
+            )
+
+            if similarity < min_similarity:
+                continue
+
+            results.append(
+                ResourceSimilarityResult(
+                    resource_id=resource.id,
+                    resource=resource,
+                    embedding_id=embedding_id,
+                    cosine_distance=distance,
+                    similarity_score=similarity,
+                )
+            )
+
+        return results
+
+    # ---------------------------------------------------------
+    # Retrieve an individual resource embedding
+    # ---------------------------------------------------------
+
+    def get_resource_embedding(
+        self,
+        db: Session,
+        resource_id: UUID,
+    ) -> ResourceEmbedding:
+
+        if not isinstance(resource_id, UUID):
+            raise ResourceSimilarityValidationError(
+                "Resource ID must be a UUID."
+            )
+
+        statement = (
+            select(ResourceEmbedding)
+            .where(
+                ResourceEmbedding.resource_id == resource_id,
+                *self._compatible_embedding_filters(),
+            )
+            .order_by(
+                ResourceEmbedding.updated_at.desc()
+            )
+            .limit(1)
+        )
+
+        embedding = db.execute(
+            statement
+        ).scalars().first()
+
+        if embedding is None:
+            raise ResourceEmbeddingNotFoundError(
+                "No compatible ready embedding exists "
+                "for the requested resource."
+            )
+
+        if embedding.embedding is None:
+            raise ResourceEmbeddingNotFoundError(
+                "The resource embedding has no stored vector."
+            )
+
+        return embedding
+
+    # ---------------------------------------------------------
+    # Resource-to-resource comparison
+    # ---------------------------------------------------------
+
+    def compare_resources(
+        self,
+        db: Session,
+        source_resource_id: UUID,
+        target_resource_id: UUID,
+    ) -> ResourceComparisonResult:
+        """
+        Compare two resources using their stored embeddings.
+
+        Both resources must have compatible ready embeddings.
+        """
+
+        if source_resource_id == target_resource_id:
+            raise ResourceSimilarityValidationError(
+                "Source and target resources must be different."
+            )
+
+        source_embedding = self.get_resource_embedding(
+            db,
+            source_resource_id,
+        )
+
+        target_embedding = self.get_resource_embedding(
+            db,
+            target_resource_id,
+        )
+
+        distance = float(
+            db.query(
+                ResourceEmbedding.embedding.cosine_distance(
+                    list(source_embedding.embedding)
+                )
+            )
+            .filter(
+                ResourceEmbedding.id == target_embedding.id
+            )
+            .scalar()
+        )
+
+        similarity = self.distance_to_similarity(
+            distance
+        )
+
+        return ResourceComparisonResult(
+            source_resource_id=source_resource_id,
+            target_resource_id=target_resource_id,
+            cosine_distance=distance,
+            similarity_score=similarity,
+        )
+
+    # ---------------------------------------------------------
+    # Find resources similar to another resource
+    # ---------------------------------------------------------
+
+    def find_similar_to_resource(
+        self,
+        db: Session,
+        resource_id: UUID,
+        limit: int = 10,
+        min_similarity: float = 0.0,
+    ) -> list[ResourceSimilarityResult]:
+        """
+        Retrieve nearest neighbors of an existing resource.
+        """
+
+        source_embedding = self.get_resource_embedding(
+            db,
+            resource_id,
+        )
+
+        return self.find_similar_resources(
+            db=db,
+            query_vector=list(source_embedding.embedding),
+            limit=limit,
+            min_similarity=min_similarity,
+            exclude_resource_id=resource_id,
+        )
+
+
+==================================================
+FILE: app/services/embeddings/embedding_service.py
+==================================================
+
+import asyncio
+
+from app.core.embedding_config import (
+    EmbeddingSettings,
+    get_embedding_settings,
+)
+
+from app.schemas.embeddings import (
+    EmbeddingRequest,
+    EmbeddingResult,
+    EmbeddingTask,
+)
+
+from app.services.embeddings.base import BaseEmbeddingProvider
+
+from app.services.embeddings.exceptions import (
+    EmbeddingInputTooLargeError,
+)
+
+from app.services.embeddings.gemini_provider import (
+    GeminiEmbeddingProvider,
+)
+
+
+class EmbeddingService:
+
+    def __init__(
+        self,
+        provider: BaseEmbeddingProvider | None = None,
+        settings: EmbeddingSettings | None = None,
+    ):
+        self.settings = settings or get_embedding_settings()
+
+        if provider is not None:
+            self.provider = provider
+
+        elif self.settings.provider == "gemini":
+            self.provider = GeminiEmbeddingProvider(
+                self.settings
+            )
+
+        else:
+            raise ValueError(
+                "Unsupported embedding provider."
+            )
+
+    def _build_request(
+        self,
+        text: str,
+        task: EmbeddingTask,
+    ) -> EmbeddingRequest:
+
+        if not isinstance(text, str):
+            raise TypeError("Text must be a string.")
+
+        if len(text) > self.settings.max_input_characters:
+            raise EmbeddingInputTooLargeError(
+                "Input exceeds configured character limit."
+            )
+
+        return EmbeddingRequest(
+            text=text,
+            task=task,
+        )
+
+    async def embed_document(
+        self,
+        text: str
+    ) -> EmbeddingResult:
+
+        request = self._build_request(
+            text,
+            EmbeddingTask.DOCUMENT,
+        )
+
+        return await self.provider.embed(request)
+
+    async def embed_query(
+        self,
+        text: str
+    ) -> EmbeddingResult:
+
+        request = self._build_request(
+            text,
+            EmbeddingTask.QUERY,
+        )
+
+        return await self.provider.embed(request)
+
+    async def embed_documents(
+        self,
+        texts: list[str]
+    ) -> list[EmbeddingResult]:
+
+        if not isinstance(texts, list):
+            raise TypeError("Texts must be provided as a list.")
+
+        if not texts:
+            raise ValueError("Document batch cannot be empty.")
+
+        requests = [
+            self._build_request(
+                text,
+                EmbeddingTask.DOCUMENT,
+            )
+            for text in texts
+        ]
+
+        semaphore = asyncio.Semaphore(
+            self.settings.max_concurrent_requests
+        )
+
+        async def process(request):
+            async with semaphore:
+                return await self.provider.embed(request)
+
+        return await asyncio.gather(
+            *(process(request) for request in requests)
+        )
+
+    async def close(self) -> None:
+        await self.provider.close()
+
+
+==================================================
+FILE: app/services/embeddings/base.py
+==================================================
+
+from abc import ABC, abstractmethod
+
+from app.schemas.embeddings import (
+    EmbeddingRequest,
+    EmbeddingResult,
+)
+
+
+class BaseEmbeddingProvider(ABC):
+
+    @abstractmethod
+    async def embed(
+        self,
+        request: EmbeddingRequest
+    ) -> EmbeddingResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def close(self) -> None:
+        raise NotImplementedError
+
+
+==================================================
+FILE: requirements.txt
+==================================================
+
+alembic==1.20.1
+altair==6.2.2
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.12.1
+argon2-cffi==25.1.0
+argon2-cffi-bindings==25.1.0
+arrow==1.4.0
+asttokens==3.0.1
+async-lru==2.1.0
+attrs==25.4.0
+babel==2.17.0
+beautifulsoup4==4.14.3
+bleach==6.3.0
+blinker==1.9.0
+cachetools==7.1.4
+certifi==2026.1.4
+cffi==2.0.0
+charset-normalizer==3.4.4
+click==8.3.2
+colorama==0.4.6
+comm==0.2.3
+contourpy==1.3.3
+cryptography==50.0.2
+curl_cffi==0.15.0
+cycler==0.12.1
+debugpy==1.8.19
+decorator==5.2.1
+defusedxml==0.7.1
+distro==1.9.0
+executing==2.2.1
+fastapi==0.136.0
+fastjsonschema==2.21.2
+flatbuffers==25.12.19
+fonttools==4.62.1
+fqdn==1.5.1
+gitdb==4.0.12
+GitPython==3.1.50
+google-auth==2.62.0
+google-genai==2.33.0
+greenlet==3.4.0
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.11
+iniconfig==2.3.1
+ipykernel==7.1.0
+ipython==9.9.0
+ipython_pygments_lexers==1.1.1
+ipywidgets==8.1.8
+isoduration==20.11.0
+itsdangerous==2.2.0
+jedi==0.19.2
+Jinja2==3.1.6
+joblib==1.5.3
+json5==0.13.0
+jsonpointer==3.0.0
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+jupyter==1.1.1
+jupyter-console==6.6.3
+jupyter-events==0.12.0
+jupyter-lsp==2.3.0
+jupyter_client==8.8.0
+jupyter_core==5.9.1
+jupyter_server==2.17.0
+jupyter_server_terminals==0.5.4
+jupyterlab==4.5.2
+jupyterlab_pygments==0.3.0
+jupyterlab_server==2.28.0
+jupyterlab_widgets==3.0.16
+kiwisolver==1.5.0
+lark==1.3.1
+Mako==1.4.3
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+matplotlib==3.10.9
+matplotlib-inline==0.2.1
+mdurl==0.1.2
+mistune==3.2.0
+multitasking==0.0.13
+narwhals==2.23.0
+nbclient==0.10.4
+nbconvert==7.16.6
+nbformat==5.10.4
+nest-asyncio==1.6.0
+networkx==3.7
+notebook==7.5.2
+notebook_shim==0.2.4
+numpy==2.4.1
+onnxruntime==1.31.1
+packaging==26.0
+pandas==3.0.2
+pandocfilters==1.5.1
+parso==0.8.5
+peewee==4.1.2
+pillow==12.2.0
+platformdirs==4.5.1
+pluggy==1.7.0
+prometheus_client==0.24.1
+prompt_toolkit==3.0.52
+protobuf==7.35.1
+psutil==7.2.1
+psycopg==3.3.6
+psycopg-binary==3.3.6
+pure_eval==0.2.3
+pyarrow==24.0.0
+pyasn1==0.6.5
+pyasn1_modules==0.4.2
+pycparser==3.0
+pydantic==2.13.2
+pydantic_core==2.46.2
+pydeck==0.9.3
+Pygments==2.19.2
+pymupdf==2.1
+pymupdf4llm==2.1
+pymupdf_layout==2.1
+pyparsing==3.3.2
+pytesseract==0.3.13
+pytest==9.1.1
+pytest-asyncio==1.4.1
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.4
+python-json-logger==4.0.0
+python-multipart==0.0.32
+pytz==2026.2
+pywinpty==3.0.2
+PyYAML==6.0.3
+pyzmq==27.1.0
+referencing==0.37.0
+requests==2.32.5
+rfc3339-validator==0.1.4
+rfc3986-validator==0.1.1
+rfc3987-syntax==1.1.0
+rich==15.0.0
+rpds-py==0.30.0
+scikit-learn==1.9.0
+scipy==1.18.0
+Send2Trash==2.1.0
+setuptools==80.10.1
+six==1.17.0
+smmap==5.0.3
+sniffio==1.3.1
+soupsieve==2.8.3
+SQLAlchemy==2.0.49
+stack-data==0.6.3
+starlette==1.0.0
+streamlit==1.58.0
+tabulate==0.10.0
+tenacity==9.1.4
+terminado==0.18.1
+threadpoolctl==3.6.0
+tinycss2==1.4.0
+toml==0.10.2
+tornado==6.5.4
+traitlets==5.14.3
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+tzdata==2025.3
+uri-template==1.3.0
+urllib3==2.6.3
+uvicorn==0.44.0
+watchdog==6.0.0
+watchfiles==1.3.0
+wcwidth==0.3.1
+webcolors==25.10.0
+webencodings==0.5.1
+websocket-client==1.9.0
+websockets==16.0
+widgetsnbextension==4.0.15
+xgboost==3.4.1
+yfinance==1.5.1

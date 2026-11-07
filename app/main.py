@@ -27,7 +27,9 @@ from app.database.session import engine
 from app.integrations.opportunities.registry import (
     OpportunityProviderRegistry,
 )
-
+from app.api.opportunities import (
+    router as opportunities_router,
+)
 
 # ============================================================
 # APPLICATION LIFECYCLE
@@ -172,4 +174,9 @@ app.include_router(
 app.include_router(
     resource_recommendations_router,
     prefix="/api/v1",
+)
+app.include_router(
+    opportunities_router,
+    prefix="/api/v1/opportunities",
+    tags=["Opportunities"],
 )

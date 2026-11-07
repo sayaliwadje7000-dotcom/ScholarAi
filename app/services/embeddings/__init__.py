@@ -30,6 +30,13 @@ __all__ = [
     "ChunkEmbeddingOutcome",
     "EmbeddingService",
     "GeminiEmbeddingProvider",
+    "ResourceContent",
+"ResourceContentBuilder",
+"ResourceEmbeddingOutcome",
+"ResourceEmbeddingPipeline",
+"ResourceEmbeddingPipelineResult",
+"ResourceEmbeddingPersistenceService",
+"ResourceEmbeddingPersistenceResult",
 ]
 from app.services.embeddings.embedding_persistence import (
     EmbeddingPersistenceService,
@@ -40,4 +47,19 @@ from app.services.embeddings.semantic_search import (
     SemanticSearchResult,
     SemanticSearchError,
     SemanticSearchValidationError,
+)
+from app.services.embeddings.resource_content import (
+    ResourceContent,
+    ResourceContentBuilder,
+)
+
+from app.services.embeddings.resource_embedding_pipeline import (
+    ResourceEmbeddingOutcome,
+    ResourceEmbeddingPipeline,
+    ResourceEmbeddingPipelineResult,
+)
+
+from app.services.embeddings.resource_embedding_persistence import (
+    ResourceEmbeddingPersistenceService,
+    ResourceEmbeddingPersistenceResult,
 )

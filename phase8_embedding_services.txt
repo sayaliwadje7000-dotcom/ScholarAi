@@ -1,0 +1,2598 @@
+﻿========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\base.py ==========
+from abc import ABC, abstractmethod
+
+from app.schemas.embeddings import (
+    EmbeddingRequest,
+    EmbeddingResult,
+)
+
+
+class BaseEmbeddingProvider(ABC):
+
+    @abstractmethod
+    async def embed(
+        self,
+        request: EmbeddingRequest
+    ) -> EmbeddingResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def close(self) -> None:
+        raise NotImplementedError
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\embedding_persistence.py ==========
+from __future__ import annotations
+
+import math
+
+from dataclasses import dataclass
+from typing import Sequence
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.core.embedding_config import (
+    EmbeddingSettings,
+    get_embedding_settings,
+)
+
+from app.models.chunk_embedding import ChunkEmbedding
+from app.models.document_chunk import DocumentChunk
+
+from app.services.embeddings.embedding_pipeline import (
+    ChunkEmbeddingOutcome,
+)
+
+
+PIPELINE_VERSION = "1.0.0"
+DATABASE_VECTOR_DIMENSIONS = 1536
+
+
+class EmbeddingPersistenceError(Exception):
+    """Base exception for embedding persistence errors."""
+
+
+class EmbeddingPersistenceValidationError(
+    EmbeddingPersistenceError
+):
+    """Raised when embedding data fails validation."""
+
+
+@dataclass(frozen=True)
+class EmbeddingPersistenceResult:
+    total: int
+    inserted: int
+    updated: int
+    unchanged: int
+    failed: int
+
+
+class EmbeddingPersistenceService:
+
+    def __init__(
+        self,
+        settings: EmbeddingSettings | None = None,
+    ) -> None:
+        self.settings = settings or get_embedding_settings()
+
+    def _validate_outcome(
+        self,
+        outcome: ChunkEmbeddingOutcome,
+    ) -> None:
+
+        if not outcome.chunk_id:
+            raise EmbeddingPersistenceValidationError(
+                "Chunk ID cannot be empty."
+            )
+
+        if not outcome.content_hash:
+            raise EmbeddingPersistenceValidationError(
+                "Content hash cannot be empty."
+            )
+
+        if outcome.status not in {"ready", "failed"}:
+            raise EmbeddingPersistenceValidationError(
+                "Unsupported embedding status."
+            )
+
+        if outcome.status == "failed":
+            return
+
+        embedding = outcome.embedding
+
+        if embedding is None:
+            raise EmbeddingPersistenceValidationError(
+                "Ready embedding must contain a vector."
+            )
+
+        if embedding.dimensions != DATABASE_VECTOR_DIMENSIONS:
+            raise EmbeddingPersistenceValidationError(
+                "Embedding dimensions do not match database storage."
+            )
+
+        if len(embedding.vector) != DATABASE_VECTOR_DIMENSIONS:
+            raise EmbeddingPersistenceValidationError(
+                "Invalid embedding vector length."
+            )
+
+        if embedding.provider != self.settings.provider:
+            raise EmbeddingPersistenceValidationError(
+                "Embedding provider mismatch."
+            )
+
+        if embedding.model != self.settings.model:
+            raise EmbeddingPersistenceValidationError(
+                "Embedding model mismatch."
+            )
+
+        if not all(
+            math.isfinite(float(value))
+            for value in embedding.vector
+        ):
+            raise EmbeddingPersistenceValidationError(
+                "Embedding contains non-finite values."
+            )
+
+    def _identity(
+        self,
+        outcome: ChunkEmbeddingOutcome,
+    ) -> dict:
+
+        embedding = outcome.embedding
+
+        return {
+            "chunk_id": outcome.chunk_id,
+            "content_hash": outcome.content_hash,
+            "provider": (
+                embedding.provider
+                if embedding is not None
+                else self.settings.provider
+            ),
+            "model": (
+                embedding.model
+                if embedding is not None
+                else self.settings.model
+            ),
+            "model_version": (
+                embedding.model
+                if embedding is not None
+                else self.settings.model
+            ),
+            "dimensions": (
+                embedding.dimensions
+                if embedding is not None
+                else DATABASE_VECTOR_DIMENSIONS
+            ),
+            "pipeline_version": PIPELINE_VERSION,
+        }
+
+    @staticmethod
+    def _get_first(
+        db: Session,
+        statement,
+    ):
+        """Execute a SELECT and return its first scalar result."""
+        return db.execute(statement).scalars().first()
+
+    def _get_existing_embedding(
+        self,
+        db: Session,
+        identity: dict,
+    ) -> ChunkEmbedding | None:
+
+        statement = select(ChunkEmbedding).where(
+            ChunkEmbedding.chunk_id == identity["chunk_id"],
+            ChunkEmbedding.content_hash == identity["content_hash"],
+            ChunkEmbedding.provider == identity["provider"],
+            ChunkEmbedding.model == identity["model"],
+            ChunkEmbedding.model_version == identity["model_version"],
+            ChunkEmbedding.dimensions == identity["dimensions"],
+            ChunkEmbedding.pipeline_version == identity["pipeline_version"],
+        )
+
+        return self._get_first(db, statement)
+
+    @staticmethod
+    def _vector_values(
+        embedding,
+    ) -> list[float] | None:
+
+        if embedding is None:
+            return None
+
+        return [
+            float(value)
+            for value in embedding
+        ]
+
+    def persist(
+        self,
+        db: Session,
+        outcomes: Sequence[ChunkEmbeddingOutcome],
+    ) -> EmbeddingPersistenceResult:
+
+        if isinstance(outcomes, (str, bytes)):
+            raise EmbeddingPersistenceValidationError(
+                "Outcomes must be a sequence."
+            )
+
+        counters = {
+            "inserted": 0,
+            "updated": 0,
+            "unchanged": 0,
+            "failed": 0,
+        }
+
+        try:
+            for outcome in outcomes:
+
+                self._validate_outcome(outcome)
+
+                chunk_statement = select(DocumentChunk).where(
+                    DocumentChunk.chunk_id == outcome.chunk_id
+                )
+
+                chunk = self._get_first(
+                    db,
+                    chunk_statement,
+                )
+
+                if chunk is None:
+                    raise EmbeddingPersistenceValidationError(
+                        f"Chunk not found: {outcome.chunk_id}"
+                    )
+
+                if chunk.content_hash != outcome.content_hash:
+                    raise EmbeddingPersistenceValidationError(
+                        "Chunk content hash mismatch. "
+                        "The chunk may have changed since embedding."
+                    )
+
+                identity = self._identity(outcome)
+
+                existing = self._get_existing_embedding(
+                    db,
+                    identity,
+                )
+
+                if outcome.status == "failed":
+                    counters["failed"] += 1
+
+                # Do not replace a valid vector with a transient failure.
+                if (
+                    existing is not None
+                    and existing.status == "ready"
+                    and outcome.status == "failed"
+                ):
+                    counters["unchanged"] += 1
+                    continue
+
+                vector = (
+                    list(outcome.embedding.vector)
+                    if outcome.embedding is not None
+                    else None
+                )
+
+                values = {
+                    **identity,
+                    "status": outcome.status,
+                    "embedding": vector,
+                    "error_code": (
+                        outcome.error_code
+                        if outcome.status == "failed"
+                        else None
+                    ),
+                }
+
+                if existing is not None:
+
+                    current_vector = self._vector_values(
+                        existing.embedding
+                    )
+
+                    unchanged = (
+                        existing.status == values["status"]
+                        and current_vector == values["embedding"]
+                        and existing.error_code == values["error_code"]
+                    )
+
+                    if unchanged:
+                        counters["unchanged"] += 1
+                        continue
+
+                    for field, value in values.items():
+                        setattr(existing, field, value)
+
+                    counters["updated"] += 1
+
+                else:
+                    db.add(
+                        ChunkEmbedding(**values)
+                    )
+                    counters["inserted"] += 1
+
+            db.flush()
+            db.commit()
+
+        except Exception:
+            db.rollback()
+            raise
+
+        return EmbeddingPersistenceResult(
+            total=len(outcomes),
+            inserted=counters["inserted"],
+            updated=counters["updated"],
+            unchanged=counters["unchanged"],
+            failed=counters["failed"],
+        )
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\embedding_pipeline.py ==========
+import asyncio
+import time
+
+from dataclasses import dataclass
+from typing import Sequence
+
+from app.schemas.embeddings import EmbeddingResult
+from app.services.embeddings.embedding_service import EmbeddingService
+from app.services.embeddings.metadata import compute_content_hash
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkEmbeddingOutcome:
+    chunk_id: str
+    content_hash: str
+    status: str
+    embedding: EmbeddingResult | None = None
+    error_code: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingPipelineResult:
+    total_chunks: int
+    successful_chunks: int
+    failed_chunks: int
+    outcomes: tuple[ChunkEmbeddingOutcome, ...]
+    provider: str
+    model: str
+    dimensions: int
+    duration_seconds: float
+
+    @property
+    def success_rate(self) -> float:
+        if self.total_chunks == 0:
+            return 0.0
+
+        return self.successful_chunks / self.total_chunks
+
+
+class EmbeddingPipelineError(Exception):
+    """Base exception for embedding pipeline failures."""
+
+
+class EmbeddingPipelineInputError(EmbeddingPipelineError):
+    """Raised when chunk input is invalid."""
+
+
+class EmbeddingPipeline:
+    """
+    Generates embeddings for persistent document chunks.
+
+    Responsibilities:
+    - Validate chunk identity and content.
+    - Verify deterministic content hashes.
+    - Process chunks in bounded batches.
+    - Reuse the existing EmbeddingService.
+    - Track individual successes and failures.
+    - Validate embedding metadata and dimensions.
+
+    Database persistence is intentionally excluded.
+    """
+
+    def __init__(
+        self,
+        embedding_service: EmbeddingService,
+        batch_size: int = 32,
+    ):
+        if batch_size <= 0:
+            raise ValueError("Batch size must be positive.")
+
+        self.embedding_service = embedding_service
+        self.batch_size = batch_size
+
+        self.settings = embedding_service.settings
+
+    @staticmethod
+    def _validate_chunks(chunks: Sequence) -> list:
+        if isinstance(chunks, (str, bytes)):
+            raise EmbeddingPipelineInputError(
+                "Chunks must be a sequence of chunk objects."
+            )
+
+        if not isinstance(chunks, Sequence):
+            raise EmbeddingPipelineInputError(
+                "Chunks must be a sequence."
+            )
+
+        validated = list(chunks)
+
+        seen_ids = set()
+
+        for chunk in validated:
+            chunk_id = getattr(chunk, "chunk_id", None)
+            text = getattr(chunk, "text", None)
+            content_hash = getattr(chunk, "content_hash", None)
+
+            if not isinstance(chunk_id, str) or not chunk_id.strip():
+                raise EmbeddingPipelineInputError(
+                    "Every chunk must have a valid chunk_id."
+                )
+
+            if chunk_id in seen_ids:
+                raise EmbeddingPipelineInputError(
+                    f"Duplicate chunk identifier: {chunk_id}"
+                )
+
+            seen_ids.add(chunk_id)
+
+            if not isinstance(text, str) or not text.strip():
+                raise EmbeddingPipelineInputError(
+                    f"Chunk {chunk_id} has empty or invalid text."
+                )
+
+            if not isinstance(content_hash, str):
+                raise EmbeddingPipelineInputError(
+                    f"Chunk {chunk_id} has an invalid content hash."
+                )
+
+            expected_hash = compute_content_hash(text)
+
+            if content_hash != expected_hash:
+                raise EmbeddingPipelineInputError(
+                    f"Content hash mismatch for chunk {chunk_id}."
+                )
+
+        return validated
+
+    def _validate_embedding(
+        self,
+        result: EmbeddingResult,
+    ) -> None:
+
+        if not isinstance(result, EmbeddingResult):
+            raise TypeError(
+                "Embedding service returned an invalid result."
+            )
+
+        if result.dimensions != self.settings.dimensions:
+            raise ValueError(
+                "Embedding dimensions do not match configured dimensions."
+            )
+
+        if result.model != self.settings.model:
+            raise ValueError(
+                "Embedding model does not match configured model."
+            )
+
+        if result.provider != self.settings.provider:
+            raise ValueError(
+                "Embedding provider does not match configured provider."
+            )
+
+        if len(result.vector) != self.settings.dimensions:
+            raise ValueError(
+                "Embedding vector length is invalid."
+            )
+
+    async def _process_chunk(
+        self,
+        chunk,
+    ) -> ChunkEmbeddingOutcome:
+
+        chunk_id = chunk.chunk_id
+        content_hash = chunk.content_hash
+
+        try:
+            embedding = await self.embedding_service.embed_document(
+                chunk.text
+            )
+
+            self._validate_embedding(embedding)
+
+            return ChunkEmbeddingOutcome(
+                chunk_id=chunk_id,
+                content_hash=content_hash,
+                status="ready",
+                embedding=embedding,
+            )
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+            return ChunkEmbeddingOutcome(
+                chunk_id=chunk_id,
+                content_hash=content_hash,
+                status="failed",
+                error_code=type(exc).__name__,
+            )
+
+    async def generate(
+        self,
+        chunks: Sequence,
+    ) -> EmbeddingPipelineResult:
+        """
+        Generate embeddings for a collection of document chunks.
+
+        Results preserve the original input order.
+        Individual chunk failures do not terminate the pipeline.
+        """
+
+        started_at = time.perf_counter()
+
+        validated_chunks = self._validate_chunks(chunks)
+
+        if not validated_chunks:
+            return EmbeddingPipelineResult(
+                total_chunks=0,
+                successful_chunks=0,
+                failed_chunks=0,
+                outcomes=(),
+                provider=self.settings.provider,
+                model=self.settings.model,
+                dimensions=self.settings.dimensions,
+                duration_seconds=0.0,
+            )
+
+        outcomes = []
+
+        for start in range(
+            0,
+            len(validated_chunks),
+            self.batch_size,
+        ):
+            batch = validated_chunks[
+                start:start + self.batch_size
+            ]
+
+            batch_results = await asyncio.gather(
+                *(
+                    self._process_chunk(chunk)
+                    for chunk in batch
+                )
+            )
+
+            outcomes.extend(batch_results)
+
+        successful = sum(
+            outcome.status == "ready"
+            for outcome in outcomes
+        )
+
+        failed = len(outcomes) - successful
+
+        duration = time.perf_counter() - started_at
+
+        return EmbeddingPipelineResult(
+            total_chunks=len(validated_chunks),
+            successful_chunks=successful,
+            failed_chunks=failed,
+            outcomes=tuple(outcomes),
+            provider=self.settings.provider,
+            model=self.settings.model,
+            dimensions=self.settings.dimensions,
+            duration_seconds=round(duration, 6),
+        )
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\embedding_service.py ==========
+import asyncio
+
+from app.core.embedding_config import (
+    EmbeddingSettings,
+    get_embedding_settings,
+)
+
+from app.schemas.embeddings import (
+    EmbeddingRequest,
+    EmbeddingResult,
+    EmbeddingTask,
+)
+
+from app.services.embeddings.base import BaseEmbeddingProvider
+
+from app.services.embeddings.exceptions import (
+    EmbeddingInputTooLargeError,
+)
+
+from app.services.embeddings.gemini_provider import (
+    GeminiEmbeddingProvider,
+)
+
+
+class EmbeddingService:
+
+    def __init__(
+        self,
+        provider: BaseEmbeddingProvider | None = None,
+        settings: EmbeddingSettings | None = None,
+    ):
+        self.settings = settings or get_embedding_settings()
+
+        if provider is not None:
+            self.provider = provider
+
+        elif self.settings.provider == "gemini":
+            self.provider = GeminiEmbeddingProvider(
+                self.settings
+            )
+
+        else:
+            raise ValueError(
+                "Unsupported embedding provider."
+            )
+
+    def _build_request(
+        self,
+        text: str,
+        task: EmbeddingTask,
+    ) -> EmbeddingRequest:
+
+        if not isinstance(text, str):
+            raise TypeError("Text must be a string.")
+
+        if len(text) > self.settings.max_input_characters:
+            raise EmbeddingInputTooLargeError(
+                "Input exceeds configured character limit."
+            )
+
+        return EmbeddingRequest(
+            text=text,
+            task=task,
+        )
+
+    async def embed_document(
+        self,
+        text: str
+    ) -> EmbeddingResult:
+
+        request = self._build_request(
+            text,
+            EmbeddingTask.DOCUMENT,
+        )
+
+        return await self.provider.embed(request)
+
+    async def embed_query(
+        self,
+        text: str
+    ) -> EmbeddingResult:
+
+        request = self._build_request(
+            text,
+            EmbeddingTask.QUERY,
+        )
+
+        return await self.provider.embed(request)
+
+    async def embed_documents(
+        self,
+        texts: list[str]
+    ) -> list[EmbeddingResult]:
+
+        if not isinstance(texts, list):
+            raise TypeError("Texts must be provided as a list.")
+
+        if not texts:
+            raise ValueError("Document batch cannot be empty.")
+
+        requests = [
+            self._build_request(
+                text,
+                EmbeddingTask.DOCUMENT,
+            )
+            for text in texts
+        ]
+
+        semaphore = asyncio.Semaphore(
+            self.settings.max_concurrent_requests
+        )
+
+        async def process(request):
+            async with semaphore:
+                return await self.provider.embed(request)
+
+        return await asyncio.gather(
+            *(process(request) for request in requests)
+        )
+
+    async def close(self) -> None:
+        await self.provider.close()
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\exceptions.py ==========
+class EmbeddingError(Exception):
+    """Base exception for embedding operations."""
+
+
+class EmbeddingConfigurationError(EmbeddingError):
+    pass
+
+
+class EmbeddingAuthenticationError(EmbeddingError):
+    pass
+
+
+class EmbeddingRateLimitError(EmbeddingError):
+    pass
+
+
+class EmbeddingTimeoutError(EmbeddingError):
+    pass
+
+
+class EmbeddingProviderError(EmbeddingError):
+    pass
+
+
+class EmbeddingValidationError(EmbeddingError):
+    pass
+
+
+class EmbeddingInputTooLargeError(EmbeddingValidationError):
+    pass
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\gemini_provider.py ==========
+import asyncio
+import math
+import random
+
+from google import genai
+from google.genai import errors, types
+
+from app.core.embedding_config import EmbeddingSettings
+from app.schemas.embeddings import (
+    EmbeddingRequest,
+    EmbeddingResult,
+    EmbeddingTask,
+)
+from app.services.embeddings.base import BaseEmbeddingProvider
+from app.services.embeddings.exceptions import (
+    EmbeddingAuthenticationError,
+    EmbeddingInputTooLargeError,
+    EmbeddingProviderError,
+    EmbeddingRateLimitError,
+    EmbeddingTimeoutError,
+    EmbeddingValidationError,
+)
+
+
+class GeminiEmbeddingProvider(BaseEmbeddingProvider):
+    """Gemini Embedding 2 provider."""
+
+    def __init__(
+        self,
+        settings: EmbeddingSettings,
+        client=None,
+    ):
+        self.settings = settings
+
+        if client is None:
+            if not settings.api_key:
+                raise EmbeddingAuthenticationError(
+                    "GEMINI_API_KEY is not configured."
+                )
+
+            self.client = genai.Client(
+                api_key=settings.api_key,
+                http_options=types.HttpOptions(
+                    timeout=int(
+                        settings.request_timeout_seconds * 1000
+                    ),
+                    retry_options=types.HttpRetryOptions(
+                        attempts=1,
+                    ),
+                ),
+            )
+        else:
+            self.client = client
+
+        self._semaphore = asyncio.Semaphore(
+            settings.max_concurrent_requests
+        )
+
+    @staticmethod
+    def _prepare_input(request: EmbeddingRequest) -> str:
+        """Prepare model-specific retrieval instructions."""
+
+        if request.task == EmbeddingTask.DOCUMENT:
+            return f"title: none | text: {request.text}"
+
+        if request.task == EmbeddingTask.QUERY:
+            return (
+                "task: search result | query: "
+                f"{request.text}"
+            )
+
+        raise EmbeddingValidationError(
+            "Unsupported embedding task."
+        )
+
+    @staticmethod
+    def _classify_exception(exc: Exception):
+        """Map SDK failures to application exceptions."""
+
+        if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+            return EmbeddingTimeoutError
+
+        if isinstance(exc, errors.APIError):
+            status_code = exc.code
+            message = (exc.message or "").lower()
+            status = (exc.status or "").upper()
+
+            if status_code in (401, 403):
+                return EmbeddingAuthenticationError
+
+            if status_code == 429:
+                return EmbeddingRateLimitError
+
+            if status_code in (408, 504):
+                return EmbeddingTimeoutError
+
+            if (
+                status_code in (413,)
+                or "token limit" in message
+                or "input too long" in message
+                or "too many tokens" in message
+            ):
+                return EmbeddingInputTooLargeError
+
+            if status_code is not None and 500 <= status_code <= 599:
+                return EmbeddingProviderError
+
+            if status_code is not None and 400 <= status_code <= 499:
+                return EmbeddingProviderError
+
+            if status in ("RESOURCE_EXHAUSTED",):
+                return EmbeddingRateLimitError
+
+            if status in ("UNAUTHENTICATED", "PERMISSION_DENIED"):
+                return EmbeddingAuthenticationError
+
+        return EmbeddingProviderError
+
+    @staticmethod
+    def _is_retryable(
+        error: Exception,
+        original_exception: Exception,
+    ) -> bool:
+        """Only retry transient failures."""
+
+        if isinstance(
+            error,
+            (
+                EmbeddingRateLimitError,
+                EmbeddingTimeoutError,
+            ),
+        ):
+            return True
+
+        if isinstance(original_exception, errors.ServerError):
+            return True
+
+        return False
+
+    def _validate_vector(self, values) -> tuple[float, ...]:
+        """Validate embedding dimensions and numerical integrity."""
+
+        if values is None:
+            raise EmbeddingValidationError(
+                "Provider returned an empty vector."
+            )
+
+        try:
+            vector = tuple(
+                float(value) for value in values
+            )
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise EmbeddingValidationError(
+                "Provider returned invalid vector values."
+            ) from exc
+
+        if len(vector) != self.settings.dimensions:
+            raise EmbeddingValidationError(
+                f"Expected {self.settings.dimensions} dimensions, "
+                f"received {len(vector)}."
+            )
+
+        if not all(math.isfinite(value) for value in vector):
+            raise EmbeddingValidationError(
+                "Vector contains non-finite values."
+            )
+
+        return vector
+
+    async def embed(
+        self,
+        request: EmbeddingRequest,
+    ) -> EmbeddingResult:
+        """Generate one embedding with bounded retries."""
+
+        if len(request.text) > self.settings.max_input_characters:
+            raise EmbeddingInputTooLargeError(
+                "Input exceeds configured character limit."
+            )
+
+        prepared_text = self._prepare_input(request)
+
+        async with self._semaphore:
+
+            for attempt in range(
+                self.settings.max_retries + 1
+            ):
+                try:
+                    response = (
+                        await self.client.aio.models.embed_content(
+                            model=self.settings.model,
+                            contents=prepared_text,
+                            config=types.EmbedContentConfig(
+                                output_dimensionality=(
+                                    self.settings.dimensions
+                                )
+                            ),
+                        )
+                    )
+
+                    embeddings = getattr(
+                        response,
+                        "embeddings",
+                        None,
+                    )
+
+                    if (
+                        not embeddings
+                        or len(embeddings) != 1
+                    ):
+                        raise EmbeddingValidationError(
+                            "Unexpected embedding response count."
+                        )
+
+                    vector = self._validate_vector(
+                        embeddings[0].values
+                    )
+
+                    return EmbeddingResult(
+                        vector=vector,
+                        model=self.settings.model,
+                        provider="gemini",
+                        dimensions=len(vector),
+                    )
+
+                except asyncio.CancelledError:
+                    raise
+
+                except EmbeddingValidationError:
+                    raise
+
+                except Exception as exc:
+                    error_type = self._classify_exception(exc)
+
+                    error = error_type(
+                        "Gemini embedding request failed."
+                    )
+
+                    if (
+                        not self._is_retryable(error, exc)
+                        or attempt >= self.settings.max_retries
+                    ):
+                        raise error from exc
+
+                    delay = min(
+                        self.settings.retry_max_delay_seconds,
+                        self.settings.retry_base_delay_seconds
+                        * (2 ** attempt),
+                    )
+
+                    delay *= random.uniform(0.75, 1.25)
+
+                    await asyncio.sleep(delay)
+
+        raise EmbeddingProviderError(
+            "Embedding generation failed."
+        )
+
+    async def close(self) -> None:
+        """Close the asynchronous SDK client."""
+
+        aio_client = getattr(
+            self.client,
+            "aio",
+            None,
+        )
+
+        if aio_client is None:
+            return
+
+        close = getattr(
+            aio_client,
+            "aclose",
+            None,
+        )
+
+        if close is not None:
+            result = close()
+
+            if hasattr(result, "__await__"):
+                await result
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\metadata.py ==========
+import hashlib
+
+
+def compute_content_hash(text: str) -> str:
+    """
+    Calculate a deterministic SHA-256 hash of chunk content.
+    """
+
+    if not isinstance(text, str):
+        raise TypeError("Chunk content must be a string.")
+
+    if not text:
+        raise ValueError("Chunk content cannot be empty.")
+
+    normalized = text.encode("utf-8")
+
+    return hashlib.sha256(normalized).hexdigest()
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\retrieval_benchmark.py ==========
+from __future__ import annotations
+
+import asyncio
+import inspect
+import statistics
+import time
+
+from dataclasses import dataclass
+from typing import Any, Callable
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkResult:
+    iterations: int
+    warmup_iterations: int
+    mean_latency_ms: float
+    median_latency_ms: float
+    p95_latency_ms: float
+    minimum_latency_ms: float
+    maximum_latency_ms: float
+    throughput_per_second: float
+
+
+def _validate_iterations(
+    iterations: int,
+    warmup_iterations: int,
+) -> None:
+    if (
+        isinstance(iterations, bool)
+        or not isinstance(iterations, int)
+        or iterations <= 0
+    ):
+        raise ValueError("iterations must be a positive integer.")
+
+    if (
+        isinstance(warmup_iterations, bool)
+        or not isinstance(warmup_iterations, int)
+        or warmup_iterations < 0
+    ):
+        raise ValueError(
+            "warmup_iterations must be a non-negative integer."
+        )
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    """Calculate percentile using linear interpolation."""
+
+    ordered = sorted(values)
+
+    if len(ordered) == 1:
+        return ordered[0]
+
+    position = (len(ordered) - 1) * percentile
+    lower_index = int(position)
+    upper_index = min(lower_index + 1, len(ordered) - 1)
+
+    fraction = position - lower_index
+
+    return (
+        ordered[lower_index] * (1 - fraction)
+        + ordered[upper_index] * fraction
+    )
+
+
+def _build_result(
+    latencies: list[float],
+    warmup_iterations: int,
+    total_elapsed_seconds: float,
+) -> BenchmarkResult:
+    total_latency = sum(latencies)
+
+    return BenchmarkResult(
+        iterations=len(latencies),
+        warmup_iterations=warmup_iterations,
+        mean_latency_ms=statistics.mean(latencies),
+        median_latency_ms=statistics.median(latencies),
+        p95_latency_ms=_percentile(latencies, 0.95),
+        minimum_latency_ms=min(latencies),
+        maximum_latency_ms=max(latencies),
+        throughput_per_second=(
+            len(latencies) / total_elapsed_seconds
+            if total_elapsed_seconds > 0
+            else 0.0
+        ),
+    )
+
+
+def benchmark_callable(
+    function: Callable[[], Any],
+    iterations: int = 100,
+    warmup_iterations: int = 5,
+) -> BenchmarkResult:
+    """
+    Benchmark a synchronous callable.
+
+    Awaitable results are rejected. Use benchmark_async_callable
+    for asynchronous functions.
+    """
+
+    _validate_iterations(iterations, warmup_iterations)
+
+    if not callable(function):
+        raise TypeError("function must be callable.")
+
+    for _ in range(warmup_iterations):
+        result = function()
+
+        if inspect.isawaitable(result):
+            if inspect.iscoroutine(result):
+                result.close()
+
+            raise TypeError(
+                "An asynchronous callable requires benchmark_async_callable."
+            )
+
+    latencies: list[float] = []
+
+    total_start = time.perf_counter()
+
+    for _ in range(iterations):
+        start = time.perf_counter()
+
+        result = function()
+
+        if inspect.isawaitable(result):
+            if inspect.iscoroutine(result):
+                result.close()
+
+            raise TypeError(
+                "An asynchronous callable requires benchmark_async_callable."
+            )
+
+        elapsed = time.perf_counter() - start
+        latencies.append(elapsed * 1000)
+
+    total_elapsed = time.perf_counter() - total_start
+
+    return _build_result(
+        latencies,
+        warmup_iterations,
+        total_elapsed,
+    )
+
+
+async def benchmark_async_callable(
+    function: Callable[[], Any],
+    iterations: int = 100,
+    warmup_iterations: int = 5,
+) -> BenchmarkResult:
+    """
+    Benchmark an asynchronous callable sequentially.
+
+    Supports both async functions and synchronous functions
+    returning awaitable results.
+    """
+
+    _validate_iterations(iterations, warmup_iterations)
+
+    if not callable(function):
+        raise TypeError("function must be callable.")
+
+    async def execute() -> None:
+        result = function()
+
+        if inspect.isawaitable(result):
+            await result
+
+    for _ in range(warmup_iterations):
+        await execute()
+
+    latencies: list[float] = []
+
+    total_start = time.perf_counter()
+
+    for _ in range(iterations):
+        start = time.perf_counter()
+
+        await execute()
+
+        elapsed = time.perf_counter() - start
+        latencies.append(elapsed * 1000)
+
+    total_elapsed = time.perf_counter() - total_start
+
+    return _build_result(
+        latencies,
+        warmup_iterations,
+        total_elapsed,
+    )
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\retrieval_evaluation.py ==========
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Hashable, Mapping, Sequence
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalMetrics:
+    precision_at_k: float
+    recall_at_k: float
+    mean_reciprocal_rank: float
+    relevant_retrieved: int
+    retrieved_count: int
+    relevant_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class AggregateRetrievalMetrics:
+    precision_at_k: float
+    recall_at_k: float
+    mean_reciprocal_rank: float
+    query_count: int
+
+
+def evaluate_retrieval(
+    retrieved_ids: Sequence[Hashable],
+    relevant_ids: Sequence[Hashable],
+    k: int = 5,
+) -> RetrievalMetrics:
+    """
+    Evaluate a single ranked retrieval result.
+
+    Precision@K = relevant retrieved in top K / K
+    Recall@K = relevant retrieved in top K / total relevant
+    MRR = reciprocal rank of the first relevant result.
+    """
+
+    if isinstance(k, bool) or not isinstance(k, int) or k <= 0:
+        raise ValueError("k must be a positive integer.")
+
+    if len(set(retrieved_ids)) != len(retrieved_ids):
+        raise ValueError("retrieved_ids must not contain duplicates.")
+
+    relevant_set = set(relevant_ids)
+
+    if not relevant_set:
+        raise ValueError("relevant_ids must contain at least one relevant item.")
+
+    ranked_results = list(retrieved_ids[:k])
+
+    relevant_retrieved = sum(
+        1 for item in ranked_results if item in relevant_set
+    )
+
+    precision = relevant_retrieved / k
+    recall = relevant_retrieved / len(relevant_set)
+
+    reciprocal_rank = 0.0
+
+    for rank, item in enumerate(ranked_results, start=1):
+        if item in relevant_set:
+            reciprocal_rank = 1.0 / rank
+            break
+
+    return RetrievalMetrics(
+        precision_at_k=precision,
+        recall_at_k=recall,
+        mean_reciprocal_rank=reciprocal_rank,
+        relevant_retrieved=relevant_retrieved,
+        retrieved_count=len(ranked_results),
+        relevant_count=len(relevant_set),
+    )
+
+
+def evaluate_retrieval_batch(
+    retrieved_by_query: Mapping[Hashable, Sequence[Hashable]],
+    relevant_by_query: Mapping[Hashable, Sequence[Hashable]],
+    k: int = 5,
+) -> AggregateRetrievalMetrics:
+    """
+    Evaluate multiple queries using macro-averaged metrics.
+
+    Every evaluated query must have at least one relevant item.
+    """
+
+    if not retrieved_by_query:
+        raise ValueError("At least one retrieval query is required.")
+
+    if set(retrieved_by_query) != set(relevant_by_query):
+        raise ValueError(
+            "Retrieved and relevant query IDs must match exactly."
+        )
+
+    results = [
+        evaluate_retrieval(
+            retrieved_ids=retrieved_by_query[query_id],
+            relevant_ids=relevant_by_query[query_id],
+            k=k,
+        )
+        for query_id in retrieved_by_query
+    ]
+
+    count = len(results)
+
+    return AggregateRetrievalMetrics(
+        precision_at_k=sum(
+            result.precision_at_k for result in results
+        ) / count,
+        recall_at_k=sum(
+            result.recall_at_k for result in results
+        ) / count,
+        mean_reciprocal_rank=sum(
+            result.mean_reciprocal_rank for result in results
+        ) / count,
+        query_count=count,
+    )
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\semantic_search.py ==========
+from __future__ import annotations
+
+import math
+import uuid
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+
+from sqlalchemy import and_, select
+from sqlalchemy.orm import Session
+
+from app.models.chunk_embedding import ChunkEmbedding
+from app.models.document_chunk import DocumentChunk
+
+
+DATABASE_VECTOR_DIMENSIONS = 1536
+
+DEFAULT_SEARCH_LIMIT = 10
+MAX_SEARCH_LIMIT = 100
+
+
+class SemanticSearchError(Exception):
+    """Base exception for semantic search operations."""
+
+
+class SemanticSearchValidationError(SemanticSearchError):
+    """Raised when search input or filters are invalid."""
+
+
+@dataclass(frozen=True)
+class SemanticSearchResult:
+    chunk_id: str
+    document_id: uuid.UUID
+    chunk_index: int
+    text: str
+
+    page_numbers: list[int]
+    start_page: int | None
+    end_page: int | None
+
+    similarity: float
+    distance: float
+
+    provider: str
+    model: str
+    dimensions: int
+    pipeline_version: str
+    chunking_version: str
+
+
+class SemanticSearchService:
+    """
+    PostgreSQL pgvector semantic retrieval service.
+
+    Uses cosine distance to identify the most relevant
+    document chunks.
+
+    Supports metadata filtering by:
+    - Document ID
+    - Multiple document IDs
+    - Chunking version
+    - Embedding provider
+    - Embedding model
+    - Pipeline version
+    """
+
+    def __init__(
+        self,
+        vector_dimensions: int = DATABASE_VECTOR_DIMENSIONS,
+        default_limit: int = DEFAULT_SEARCH_LIMIT,
+        max_limit: int = MAX_SEARCH_LIMIT,
+    ) -> None:
+
+        if vector_dimensions != DATABASE_VECTOR_DIMENSIONS:
+            raise SemanticSearchValidationError(
+                "Configured dimensions must match the database "
+                f"VECTOR({DATABASE_VECTOR_DIMENSIONS}) column."
+            )
+
+        if default_limit < 1:
+            raise SemanticSearchValidationError(
+                "Default search limit must be positive."
+            )
+
+        if max_limit < default_limit:
+            raise SemanticSearchValidationError(
+                "Maximum limit cannot be smaller than default limit."
+            )
+
+        self.vector_dimensions = vector_dimensions
+        self.default_limit = default_limit
+        self.max_limit = max_limit
+
+    def _validate_vector(
+        self,
+        query_vector: Sequence[float],
+    ) -> list[float]:
+
+        if isinstance(query_vector, (str, bytes)):
+            raise SemanticSearchValidationError(
+                "Query embedding must be a numeric sequence."
+            )
+
+        if not isinstance(query_vector, Sequence):
+            raise SemanticSearchValidationError(
+                "Query embedding must be a sequence."
+            )
+
+        if len(query_vector) != self.vector_dimensions:
+            raise SemanticSearchValidationError(
+                f"Expected {self.vector_dimensions} dimensions, "
+                f"received {len(query_vector)}."
+            )
+
+        vector: list[float] = []
+
+        for value in query_vector:
+
+            if isinstance(value, bool) or not isinstance(
+                value, (int, float)
+            ):
+                raise SemanticSearchValidationError(
+                    "Embedding contains a non-numeric value."
+                )
+
+            if not math.isfinite(value):
+                raise SemanticSearchValidationError(
+                    "Embedding contains a non-finite value."
+                )
+
+            vector.append(float(value))
+
+        return vector
+
+    def _validate_filters(
+        self,
+        document_id: uuid.UUID | None,
+        document_ids: Sequence[uuid.UUID] | None,
+        min_similarity: float | None,
+    ) -> None:
+
+        if document_id is not None and not isinstance(
+            document_id, uuid.UUID
+        ):
+            raise SemanticSearchValidationError(
+                "Document ID must be a UUID."
+            )
+
+        if document_ids is not None:
+
+            if isinstance(document_ids, (str, bytes)):
+                raise SemanticSearchValidationError(
+                    "Document IDs must be a sequence."
+                )
+
+            if not isinstance(document_ids, Sequence):
+                raise SemanticSearchValidationError(
+                    "Document IDs must be a sequence."
+                )
+
+            if not document_ids:
+                raise SemanticSearchValidationError(
+                    "Document IDs cannot be empty."
+                )
+
+            if any(
+                not isinstance(item, uuid.UUID)
+                for item in document_ids
+            ):
+                raise SemanticSearchValidationError(
+                    "Every document ID must be a UUID."
+                )
+
+            if len(set(document_ids)) != len(document_ids):
+                raise SemanticSearchValidationError(
+                    "Duplicate document IDs are not allowed."
+                )
+
+        if document_id is not None and document_ids is not None:
+            raise SemanticSearchValidationError(
+                "Use document_id or document_ids, not both."
+            )
+
+        if min_similarity is not None:
+
+            if isinstance(min_similarity, bool) or not isinstance(
+                min_similarity, (int, float)
+            ):
+                raise SemanticSearchValidationError(
+                    "Minimum similarity must be numeric."
+                )
+
+            if not math.isfinite(min_similarity):
+                raise SemanticSearchValidationError(
+                    "Minimum similarity must be finite."
+                )
+
+            if not -1.0 <= min_similarity <= 1.0:
+                raise SemanticSearchValidationError(
+                    "Minimum similarity must be between -1 and 1."
+                )
+
+    def search(
+        self,
+        db: Session,
+        query_vector: Sequence[float],
+        *,
+        limit: int | None = None,
+        document_id: uuid.UUID | None = None,
+        document_ids: Sequence[uuid.UUID] | None = None,
+        chunking_version: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        pipeline_version: str | None = None,
+        min_similarity: float | None = None,
+    ) -> list[SemanticSearchResult]:
+
+        # Validate query embedding.
+        vector = self._validate_vector(query_vector)
+
+        # Validate document filters.
+        self._validate_filters(
+            document_id,
+            document_ids,
+            min_similarity,
+        )
+
+        # Validate result limit.
+        if limit is None:
+            limit = self.default_limit
+
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise SemanticSearchValidationError(
+                "Search limit must be an integer."
+            )
+
+        if not 1 <= limit <= self.max_limit:
+            raise SemanticSearchValidationError(
+                f"Search limit must be between 1 and {self.max_limit}."
+            )
+
+        # Validate metadata filters.
+        if chunking_version is not None and (
+            not isinstance(chunking_version, str)
+            or not chunking_version.strip()
+        ):
+            raise SemanticSearchValidationError(
+                "Chunking version cannot be empty."
+            )
+
+        if provider is not None and (
+            not isinstance(provider, str) or not provider.strip()
+        ):
+            raise SemanticSearchValidationError(
+                "Provider cannot be empty."
+            )
+
+        if model is not None and (
+            not isinstance(model, str) or not model.strip()
+        ):
+            raise SemanticSearchValidationError(
+                "Model cannot be empty."
+            )
+
+        if pipeline_version is not None and (
+            not isinstance(pipeline_version, str)
+            or not pipeline_version.strip()
+        ):
+            raise SemanticSearchValidationError(
+                "Pipeline version cannot be empty."
+            )
+
+        # Calculate cosine distance using pgvector.
+        distance_expression = (
+            ChunkEmbedding.embedding
+            .cosine_distance(vector)
+            .label("distance")
+        )
+
+        # Base semantic search query.
+        statement = (
+            select(
+                DocumentChunk,
+                ChunkEmbedding,
+                distance_expression,
+            )
+            .join(
+                ChunkEmbedding,
+                and_(
+                    ChunkEmbedding.chunk_id == DocumentChunk.chunk_id,
+                    ChunkEmbedding.content_hash
+                    == DocumentChunk.content_hash,
+                ),
+            )
+            .where(
+                ChunkEmbedding.status == "ready",
+                ChunkEmbedding.embedding.is_not(None),
+                ChunkEmbedding.dimensions == self.vector_dimensions,
+            )
+        )
+
+        # Filter by one document.
+        if document_id is not None:
+            statement = statement.where(
+                DocumentChunk.document_id == document_id
+            )
+
+        # Filter by multiple documents.
+        if document_ids is not None:
+            statement = statement.where(
+                DocumentChunk.document_id.in_(document_ids)
+            )
+
+        # Filter by chunking version.
+        if chunking_version is not None:
+            statement = statement.where(
+                DocumentChunk.chunking_version == chunking_version
+            )
+
+        # Filter by embedding provider.
+        if provider is not None:
+            statement = statement.where(
+                ChunkEmbedding.provider == provider
+            )
+
+        # Filter by embedding model.
+        if model is not None:
+            statement = statement.where(
+                ChunkEmbedding.model == model
+            )
+
+        # Filter by embedding pipeline version.
+        if pipeline_version is not None:
+            statement = statement.where(
+                ChunkEmbedding.pipeline_version == pipeline_version
+            )
+
+        # Cosine similarity = 1 - cosine distance.
+        if min_similarity is not None:
+            statement = statement.where(
+                distance_expression <= 1.0 - min_similarity
+            )
+
+        # Return the closest matching chunks first.
+        statement = (
+            statement
+            .order_by(distance_expression.asc())
+            .limit(limit)
+        )
+
+        rows = db.execute(statement).all()
+
+        results: list[SemanticSearchResult] = []
+
+        for chunk, embedding, distance in rows:
+
+            distance = float(distance)
+            similarity = 1.0 - distance
+
+            results.append(
+                SemanticSearchResult(
+                    chunk_id=chunk.chunk_id,
+                    document_id=chunk.document_id,
+                    chunk_index=chunk.chunk_index,
+                    text=chunk.text,
+                    page_numbers=chunk.page_numbers or [],
+                    start_page=chunk.start_page,
+                    end_page=chunk.end_page,
+                    similarity=similarity,
+                    distance=distance,
+                    provider=embedding.provider,
+                    model=embedding.model,
+                    dimensions=embedding.dimensions,
+                    pipeline_version=embedding.pipeline_version,
+                    chunking_version=chunk.chunking_version,
+                )
+            )
+
+        return results
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\__init__.py ==========
+from app.services.embeddings.embedding_service import (
+    EmbeddingService,
+)
+
+from app.services.embeddings.gemini_provider import (
+    GeminiEmbeddingProvider,
+)
+
+__all__ = [
+    "EmbeddingService",
+    "GeminiEmbeddingProvider",
+]
+from app.services.embeddings.embedding_pipeline import (
+    EmbeddingPipeline,
+    EmbeddingPipelineResult,
+    ChunkEmbeddingOutcome,
+)
+
+from app.services.embeddings.embedding_service import (
+    EmbeddingService,
+)
+
+from app.services.embeddings.gemini_provider import (
+    GeminiEmbeddingProvider,
+)
+
+__all__ = [
+    "EmbeddingPipeline",
+    "EmbeddingPipelineResult",
+    "ChunkEmbeddingOutcome",
+    "EmbeddingService",
+    "GeminiEmbeddingProvider",
+]
+from app.services.embeddings.embedding_persistence import (
+    EmbeddingPersistenceService,
+    EmbeddingPersistenceResult,
+)
+from app.services.embeddings.semantic_search import (
+    SemanticSearchService,
+    SemanticSearchResult,
+    SemanticSearchError,
+    SemanticSearchValidationError,
+)
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\__pycache__\base.cpython-314.pyc ==========
++
+    :ºëj  ã                   ó<   € ^ RI HtHt ^ RIHtHt  ! R R]4      tR# )é    )ÚABCÚabstractmethod©ÚEmbeddingRequestÚEmbeddingResultc                   óX   a € ] tR t^	t o ]V 3R lR l4       t]V 3R lR l4       tRtV tR# )ÚBaseEmbeddingProviderc                ó&   <€ V ^8„  d   QhRS[ RS[/# )é   ÚrequestÚreturnr   )ÚformatÚ
+__classdict__s   "€ÚJC:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\base.pyÚ__annotate__Ú"BaseEmbeddingProvider.__annotate__   s   ø€ ÷ "ñ "á!ð"ñ 
+ñ"ó    c              ƒ  ó   "  € \         h5i©N©ÚNotImplementedError)Úselfr   s   &&r   ÚembedÚBaseEmbeddingProvider.embed   s
+   é € ô
+ "Ð!ùó   ‚	c                ó   <€ V ^8„  d   QhRR/# )r   r
+   N© )r   r   s   "€r   r   r      s   ø€ ÷ "ñ "˜Tñ "r   c              ƒ  ó   "  € \         h5ir   r   )r   s   &r   ÚcloseÚBaseEmbeddingProvider.close   s   é € ä!Ð!ùr   r   N)	Ú__name__Ú
+__module__Ú__qualname__Ú__firstlineno__r   r   r   Ú__static_attributes__Ú__classdictcell__)r   s   @r   r	   r	   	   s+   ø‡ € à÷"ó ð"ð ÷"ó ö"r   r	   N)Úabcr   r   Úapp.schemas.embeddingsr   r   r	   r   r   r   Ú<module>r)      s   ðß #÷ô"˜Cö "r   
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\__pycache__\embedding_persistence.cpython-314.pyc ==========
++
+    ¤.ìjß"  ã                  óò   € ^ RI Ht ^ RIt^ RIHt ^ RIHt ^ RIHt ^ RI	H
+t
+ ^ RIHtH
+t
+ ^ RIHt ^ R	IHt ^ R
+IHt RtRt ! R
+ R]4      t ! R R]4      t]! RR7       ! R R4      4       t ! R R4      tR# )é    )ÚannotationsN)Ú	dataclass)ÚSequence)Úselect)ÚSession)ÚEmbeddingSettingsÚget_embedding_settings)ÚChunkEmbedding)Ú
+DocumentChunk)ÚChunkEmbeddingOutcomez1.0.0i   c                  ó   € ] tR t^tRtRtR# )ÚEmbeddingPersistenceErrorz0Base exception for embedding persistence errors.© N©Ú__name__Ú
+__module__Ú__qualname__Ú__firstlineno__Ú__doc__Ú__static_attributes__r   ó    Ú[C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\embedding_persistence.pyr   r      s   † Ý:r   r   c                  ó   € ] tR t^ tRtRtR# )Ú#EmbeddingPersistenceValidationErrorz,Raised when embedding data fails validation.r   Nr   r   r   r   r   r       s   † õ 7r   r   T)Úfrozenc                  óJ   € ] tR t^&t$ R]R&   R]R&   R]R&   R]R&   R]R&   RtR# )	ÚEmbeddingPersistenceResultÚintÚtotalÚinsertedÚupdatedÚ	unchangedÚfailedr   N)r   r   r   r   Ú__annotations__r   r   r   r   r   r   &   s   ‡ àƒJØƒMØ
+ƒLØƒNØ‡Kr   r   c                  ó‚   € ] tR t^/tRR R lltR R ltR R lt]R R	 l4       tR
+ R lt	]R R
+ l4       t
+R R ltRtR# )ÚEmbeddingPersistenceServiceNc               ó    € V ^8„  d   QhRRRR/# )é   ÚsettingszEmbeddingSettings | NoneÚreturnÚNoner   )Úformats   "r   Ú__annotate__Ú(EmbeddingPersistenceService.__annotate__1   s   € ÷ =ñ =à*ð=ð 
+ñ=r   c                	ó8   € T;'       g    \        4       V n        R # ©N)r	   r)   )Úselfr)   s   &&r   Ú__init__Ú$EmbeddingPersistenceService.__init__1   s   € ð !×<Ð<Ô$:Ó$<ˆŽ
+r   c               ó    € V ^8„  d   QhRRRR/# )r(   Úoutcomer   r*   r+   r   )r,   s   "r   r-   r.   7   s   € ÷ 8ñ 8à&ð8ð 
+ñ8r   c                	ó  € VP                   '       g   \        R 4      hVP                  '       g   \        R4      hVP                  R9  d   \        R4      hVP                  R8X  d   R# VP                  pVf   \        R4      hVP
+                  \        8w  d   \        R4      h\        VP                  4      \        8w  d   \        R4      hVP                  V P                  P                  8w  d   \        R4      hVP                  V P                  P                  8w  d   \        R	4      h\        ;QJ d&    R
+ VP                   4       F  '       d   K   RM	  RM! R
+ VP                   4       4      '       g   \        R
+4      hR# )zChunk ID cannot be empty.zContent hash cannot be empty.r#   zUnsupported embedding status.Nz&Ready embedding must contain a vector.z3Embedding dimensions do not match database storage.z Invalid embedding vector length.zEmbedding provider mismatch.zEmbedding model mismatch.c              3  ó`   "  € T F$  p\         P                  ! \        V4      4      x € K&  	  R # 5ir0   )ÚmathÚisfiniteÚfloat)Ú.0Úvalues   & r   Ú	<genexpr>Ú@EmbeddingPersistenceService._validate_outcome.<locals>.<genexpr>i   s'   é € ð 
+á)ô 
+MŠMœ% ›,×'Ð'Û)ùs   ‚,.FTz%Embedding contains non-finite values.>   Úreadyr#   )
+Úchunk_idr   Úcontent_hashÚstatusÚ	embeddingÚ
+dimensionsÚDATABASE_VECTOR_DIMENSIONSÚlenÚvectorÚproviderr)   ÚmodelÚall©r1   r5   rC   s   && r   Ú_validate_outcomeÚ-EmbeddingPersistenceService._validate_outcome7   s|  € ð
+ ××ÐÜ5Ø+óð 
+ð ×#×#Ð#Ü5Ø/óð 
+ð >‰>Ð!4Ô4Ü5Ø/óð 
+ð >‰>˜XÔ%Ùà×%Ñ%ˆ	àÒÜ5Ø8óð 
+ð ×ÑÔ#=Ô=Ü5ØEóð 
+ô ˆy×ÑÓ Ô$>Ô>Ü5Ø2óð 
+ð ×Ñ §¡×!7Ñ!7Ô7Ü5Ø.óð 
+ð ?‰?˜dŸm™m×1Ñ1Ô1Ü5Ø+óð 
+÷ ‹sñ 
+à"×)Ò)ó
+ssŠsñ 
+à"×)Ò)ó
+÷ 
+ò 
+ô 6Ø7óð 
+ñ	
+r   c               ó    € V ^8„  d   QhRRRR/# )r(   r5   r   r*   Údictr   )r,   s   "r   r-   r.   q   s   € ÷ 
+ñ 
+à&ð
+ð 
+ñ
+r   c                	óx  € VP                   pR VP                  RVP                  RVe
+   VP                  MV P                  P                  RVe
+   VP
+                  MV P                  P
+                  RVe
+   VP
+                  MV P                  P
+                  RVe   VP                  R\        /# \        R\        /# ©r@   rA   rH   rI   Ú
+model_versionrD   Úpipeline_version)	rC   r@   rA   rH   r)   rI   rD   rE   ÚPIPELINE_VERSIONrK   s   && r   Ú	_identityÚ%EmbeddingPersistenceService._identityq   sÁ   € ð
+ ×%Ñ%ˆ	ð 
+˜×(Ñ(Ø˜G×0Ñ0ØàÒ(ð ×"Ò"à—]‘]×+Ñ+ààÒ(ð —’à—]‘]×(Ñ(ààÒ(ð —’à—]‘]×(Ñ(ààÒ(ð ×$Ñ$ð 
+Ô 0ð/
+ð 	
+ô* 0àÔ 0ð/
+ð 	
+r   c               ó   € V ^8„  d   QhRR/# )r(   Údbr   r   )r,   s   "r   r-   r.   “   s   € ÷ 7ñ 7Øñ7r   c                
+ó\   € V P                  V4      P                  4       P                  4       # )z4Execute a SELECT and return its first scalar result.)ÚexecuteÚscalarsÚfirst)rX   Ú	statements   &&r   Ú
+_get_firstÚ&EmbeddingPersistenceService._get_first’   s%   € ð z‰z˜)Ó$×,Ñ,Ó.×4Ñ4Ó6Ð6r   c               ó$   € V ^8„  d   QhRRRRRR/# )r(   rX   r   ÚidentityrO   r*   zChunkEmbedding | Noner   )r,   s   "r   r-   r.   š   s(   € ÷ .ñ .àð.ð ð.ð 
+ñ	.r   c                	ó¼  € \        \        4      P                  \        P                  VR ,          8H  \        P                  VR,          8H  \        P
+                  VR,          8H  \        P                  VR,          8H  \        P                  VR,          8H  \        P                  VR,          8H  \        P                  VR,          8H  4      pV P                  W4      # rQ   )r   r
+   Úwherer@   rA   rH   rI   rR   rD   rS   r^   )r1   rX   ra   r]   s   &&& r   Ú_get_existing_embeddingÚ3EmbeddingPersistenceService._get_existing_embeddingš   s°   € ô œ>Ó*×0Ñ0Ü×#Ñ# x°
+Õ';Ñ;Ü×'Ñ'¨8°NÕ+CÑCÜ×#Ñ# x°
+Õ';Ñ;Ü× Ñ  H¨WÕ$5Ñ5Ü×(Ñ(¨H°_Õ,EÑEÜ×%Ñ%¨°,Õ)?Ñ?Ü×+Ñ+¨xÐ8JÕ/KÑKó
+ˆ	ð ‰˜rÓ-Ð-r   c               ó   € V ^8„  d   QhRR/# )r(   r*   zlist[float] | Noner   )r,   s   "r   r-   r.   ­   s   € ÷ 
+
+ñ 
+
+à	ñ
+
+r   c                	óN   € V f   R # V  Uu. uF  p\        V4      NK  	  up# u upi r0   )r:   )rC   r<   s   & r   Ú_vector_valuesÚ*EmbeddingPersistenceService._vector_values¬   s8   € ð
+ ÒÙñ #ó
+á"ô 
+%ŽLÙ"ñ
+ð 	
+ùò 
+s   ‹"c               ó$   € V ^8„  d   QhRRRRRR/# )r(   rX   r   ÚoutcomeszSequence[ChunkEmbeddingOutcome]r*   r   r   )r,   s   "r   r-   r.   ¹   s-   € ÷ w
+ñ w
+àðw
+ð 2ðw
+ð 
+$ñ	w
+r   c           	     	óX  € \        V\        \        34      '       d   \        R 4      hR^ R^ R^ R^ /p V EF}  pV P	                  V4       \        \        4      P                  \        P                  VP                  8H  4      pV P                  VV4      pVf   \        RVP                   24      hVP                  VP                  8w  d   \        R4      hV P                  V4      pV P                  VV4      pVP                  R8X  d   VR;;,          ^,
+          uu&   Ve;   VP                  R8X  d*   VP                  R8X  d   VR;;,          ^,
+          uu&   EK)  VP                  e    \        VP                  P                   4      MRp	/ VCR	VP                  R
+T	RVP                  R8X  d
+   VP"                  MR/Cp
+VeÀ   V P%                  VP                  4      pVP                  V
+R	,          8H  ;'       d*    WºR
+,          8H  ;'       d    VP"                  V
+R,          8H  pV'       d   VR;;,          ^,
+          uu&   EK  V
+P'                  4        F  w  rÞ\)        WV4       K  	  VR;;,          ^,
+          uu&   EKN  VP+                  \-        R
+/ V
+B 4       VR;;,          ^,
+          uu&   EK€  	  VP/                  4        VP1                  4        \7        \9        T4      TR,          TR,          TR,          TR,          R7      #   \2         d    TP5                  4        h i ; i)zOutcomes must be a sequence.r    r!   r"   r#   NzChunk not found: zHChunk content hash mismatch. The chunk may have changed since embedding.r?   rB   rC   Ú
+error_code)r   r    r!   r"   r#   r   )Ú
+isinstanceÚstrÚbytesr   rL   r   r   rc   r@   r^   rA   rU   rd   rB   rC   ÚlistrG   rm   rh   ÚitemsÚsetattrÚaddr
+   ÚflushÚcommitÚ	ExceptionÚrollbackr   rF   )r1   rX   rk   Úcountersr5   Úchunk_statementÚchunkra   ÚexistingrG   ÚvaluesÚcurrent_vectorr"   Úfieldr<   s   &&&            r   ÚpersistÚ#EmbeddingPersistenceService.persist¹   s  € ô h¤¤e ×-Ò-Ü5Ø.óð 
+ð
+ 
+˜ØqØ˜Øað	
+ˆð]	Ü#à×&Ñ& wÔ/ä"(¬Ó"7×"=Ñ"=Ü!×*Ñ*¨g×.>Ñ.>Ñ>ó#ð Ÿ™ØØ#óð
+ ’=Ü=Ø+¨G×,<Ñ,<Ð+=Ð>óð ð ×%Ñ%¨×)=Ñ)=Ô=Ü=ðFóð ð
+  Ÿ>™>¨'Ó2à×7Ñ7ØØóð
+ —>‘> XÔ-Ø˜X×&¨!Õ+Ó&ð Ò(Ø Ÿ™¨7Ô2ØŸ™¨(Ô2à˜[×)¨QÕ.Ó)Úð ×(Ñ(Ò4ô ˜×*Ñ*×1Ñ1Ô2àð ð	Øð	à˜gŸn™nØ Ø à"Ÿ>™>¨XÔ5ð  ×*Ò*à!ñ	ð Ò'à%)×%8Ñ%8Ø ×*Ñ*ó&Nð
+ !Ÿ™¨6°(Õ+;Ñ;÷ Hð HØ*°[Õ.AÑA÷Hð Hà$×/Ñ/°6¸,Õ3GÑGð ÷ !Ø  ×-°Õ2Ó-Ú à(.¯©®™˜Ü °Ö7ñ )7ð ˜Y×'¨1Õ,Ö'ð —F‘FÜ&Ñ0¨Ñ0ôð ˜Z×(¨AÕ-Ö(ñk $ðn 
+H‰HŒJØI‰IŒKô *Üh“-Ø˜jÕ)Ø˜YÕ'Ø˜{Õ+Ø˜HÕ%ô
+ð 	
+øô	 ô 	ØK‰KŒMØð	ús   ³GL Ç<L ÈL È.B)L ÌL))r)   r0   )
+r   r   r   r   r2   rL   rU   Ústaticmethodr^   rd   rh   r€   r   r   r   r   r&   r&   /   sL   † ÷=õ8õt
+ðB ô7ó ð7õ.ð$ ô
+
+ó ð
+
+÷w
+ñ w
+r   r&   )Ú
+__future__r   r8   Údataclassesr   Útypingr   Ú
+sqlalchemyr   Úsqlalchemy.ormr   Úapp.core.embedding_configr   r	   Úapp.models.chunk_embeddingr
+   Úapp.models.document_chunkr   Ú*app.services.embeddings.embedding_pipeliner   rT   rE   rw   r   r   r   r&   r   r   r   Ú<module>rŒ      sz   ðÝ "ã å !Ý å Ý "÷õ
+ 6Ý 3õð
+ Ð Ø!Ð ô; 	ô ;ô7Øô7ñ $Ô÷ð ó ð÷A
+ó A
+r   
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\__pycache__\embedding_pipeline.cpython-314.pyc ==========
++
+    Èýëju  ã                   óî   € ^ RI t ^ RIt^ RIHt ^ RIHt ^ RIHt ^ RIH	t	 ^ RI
+Ht ]! RRR7       ! R	 R
+4      4       t]! RRR7       ! R R4      4       t
+ ! R
+ R]4      t ! R R]4      t ! R R4      tR# )é    N)Ú	dataclass)ÚSequence©ÚEmbeddingResult)ÚEmbeddingService)Úcompute_content_hashT)ÚfrozenÚslotsc                   ó4   a € ] tR t^t o RtRtV 3R ltRtV tR# )ÚChunkEmbeddingOutcomeNc                ór   <€ V ^8„  d   Qh/ S[ ;R&   S[ ;R&   S[ ;R&   S[R,          ;R&   S[ R,          ;R&   # )é   Úchunk_idÚcontent_hashÚstatusNÚ	embeddingÚ
+error_code)Ústrr   )ÚformatÚ
+__classdict__s   "€ÚXC:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\embedding_pipeline.pyÚ__annotate__Ú"ChunkEmbeddingOutcome.__annotate__   sK   ø‡ ‚ áMñ ñ Ññ ñ 
+Kñ	 ñ
+  Õ%Ñ,ñ ñ d•
+Ñ!ò
+ ó    © )	Ú__name__Ú
+__module__Ú__qualname__Ú__firstlineno__r   r   Ú__annotate_func__Ú__static_attributes__Ú__classdictcell__©r   s   @r   r   r      s   ø‡ € ð
+ )-€IØ!€J÷
+ ƒ r   r   c                   óH   a € ] tR t^t o ]V 3R lR l4       tV 3R ltRtV tR# )ÚEmbeddingPipelineResultc                ó    <€ V ^8„  d   QhRS[ /# ©r   Úreturn)Úfloat)r   r   s   "€r   r   Ú$EmbeddingPipelineResult.__annotate__!   s   ø€ ÷ :ñ :™eñ :r   c                ób   € V P                   ^ 8X  d   R# V P                  V P                   ,          # )r   ç        )Útotal_chunksÚsuccessful_chunks)Úselfs   &r   Úsuccess_rateÚ$EmbeddingPipelineResult.success_rate    s*   € à×Ñ Ô!Ùà×%Ñ%¨×(9Ñ(9Õ9Ð9r   c                óŽ   <€ V ^8„  d   Qh/ S[ ;R&   S[ ;R&   S[ ;R&   S[S[R3,          ;R&   S[;R&   S[;R&   S[ ;R&   S[;R	&   # )
+r   r-   r.   Ú
+failed_chunks.ÚoutcomesÚproviderÚmodelÚ
+dimensionsÚduration_seconds)ÚintÚtupler   r   r)   )r   r   s   "€r   r   r*      ss   ø‡ ‚ áÑñ ñ Ññ ñ Ññ	 ñ
+ Ñ)¨3Ð.Õ/Ñ/ñ ñ Mñ
+ ñ Jñ ñ Oñ ñ Ñò r   r   N)	r   r   r   r   Úpropertyr0   r    r!   r"   r#   s   @r   r%   r%      s    ø‡ € ð ÷:ó ð:÷ ƒ r   r%   c                   ó   € ] tR t^(tRtRtR# )ÚEmbeddingPipelineErrorz/Base exception for embedding pipeline failures.r   N©r   r   r   r   Ú__doc__r!   r   r   r   r=   r=   (   s   † Ý9r   r=   c                   ó   € ] tR t^,tRtRtR# )ÚEmbeddingPipelineInputErrorz#Raised when chunk input is invalid.r   Nr>   r   r   r   rA   rA   ,   s   † Ý-r   rA   c                   óŒ   a € ] tR t^0t o RtRV 3R lR llt]V 3R lR l4       tV 3R lR ltV 3R lR	 lt	V 3R
+ lR lt
+RtV tR
+# )ÚEmbeddingPipelineam  
+Generates embeddings for persistent document chunks.
+
+Responsibilities:
+- Validate chunk identity and content.
+- Verify deterministic content hashes.
+- Process chunks in bounded batches.
+- Reuse the existing EmbeddingService.
+- Track individual successes and failures.
+- Validate embedding metadata and dimensions.
+
+Database persistence is intentionally excluded.
+c                ó&   <€ V ^8„  d   QhRS[ RS[/# )r   Úembedding_serviceÚ
+batch_size)r   r9   )r   r   s   "€r   r   ÚEmbeddingPipeline.__annotate__?   s   ø€ ÷ 3ñ 3á+ð3ñ ñ3r   c                ód   € V^ 8:  d   \        R4      hWn        W n        VP                  V n        R# )r   zBatch size must be positive.N)Ú
+ValueErrorrE   rF   Úsettings)r/   rE   rF   s   &&&r   Ú__init__ÚEmbeddingPipeline.__init__?   s/   € ð
+ ˜Œ?ÜÐ;Ó<Ð<à!2ÔØ$Œà)×2Ñ2ˆŽ
+r   c                ó&   <€ V ^8„  d   QhRS[ RS[/# ©r   Úchunksr(   )r   Úlist)r   r   s   "€r   r   rG   M   s   ø€ ÷ 1ñ 1¡ð 1©dñ 1r   c                óÚ  € \        V \        \        34      '       d   \        R 4      h\        V \        4      '       g   \        R4      h\        V 4      p\
+        4       pV EF  p\        VRR4      p\        VRR4      p\        VRR4      p\        V\        4      '       d   VP                  4       '       g   \        R4      hWB9   d   \        RV 24      hVP                  V4       \        V\        4      '       d   VP                  4       '       g   \        RV R	24      h\        V\        4      '       g   \        RV R
+24      h\        V4      pWg8w  g   Kú  \        RV R24      h	  V# )
+z+Chunks must be a sequence of chunk objects.zChunks must be a sequence.r   NÚtextr   z'Every chunk must have a valid chunk_id.zDuplicate chunk identifier: zChunk z has empty or invalid text.z has an invalid content hash.z Content hash mismatch for chunk Ú.)Ú
+isinstancer   ÚbytesrA   r   rP   ÚsetÚgetattrÚstripÚaddr   )rO   Ú	validatedÚseen_idsÚchunkr   rR   r   Ú
+expected_hashs   &       r   Ú_validate_chunksÚ"EmbeddingPipeline._validate_chunksL   sl  € äfœs¤E˜l×+Ò+Ü-Ø=óð 
+ô ˜&¤(×+Ò+Ü-Ø,óð 
+ô ˜“Lˆ	ä“5ˆäˆEÜ˜u j°$Ó7ˆHÜ˜5 &¨$Ó/ˆDÜ" 5¨.¸$Ó?ˆLä˜h¬×,Ò,°H·N±N×4DÒ4DÜ1Ø=óð ð Ô#Ü1Ø2°8°*Ð=óð ð 
+L‰L˜Ô"ä˜d¤C×(Ò(°·
+±
+·²Ü1Ø˜X˜JÐ&AÐBóð ô ˜l¬C×0Ò0Ü1Ø˜X˜JÐ&CÐDóð ô 1°Ó6ˆMàÖ,Ü1Ø6°x°jÀÐBóð ñ= ðD Ðr   c                ó$   <€ V ^8„  d   QhRS[ RR/# )r   Úresultr(   Nr   )r   r   s   "€r   r   rG   €   s   ø€ ÷ ñ áðð 
+ñr   c                óÚ  € \        V\        4      '       g   \        R 4      hVP                  V P                  P                  8w  d   \        R4      hVP                  V P                  P                  8w  d   \        R4      hVP                  V P                  P                  8w  d   \        R4      h\        VP                  4      V P                  P                  8w  d   \        R4      hR# )z-Embedding service returned an invalid result.z8Embedding dimensions do not match configured dimensions.z0Embedding model does not match configured model.z6Embedding provider does not match configured provider.z#Embedding vector length is invalid.N)
+rT   r   Ú	TypeErrorr7   rJ   rI   r6   r5   ÚlenÚvector)r/   ra   s   &&r   Ú_validate_embeddingÚ%EmbeddingPipeline._validate_embedding€   sÍ   € ô
+ ˜&¤/×2Ò2ÜØ?óð 
+ð ×Ñ §
+¡
+× 8Ñ 8Ô8ÜØJóð 
+ð <‰<˜4Ÿ=™=×.Ñ.Ô.ÜØBóð 
+ð ?‰?˜dŸm™m×4Ñ4Ô4ÜØHóð 
+ô ˆv}‰}Ó §¡×!9Ñ!9Ô9ÜØ5óð 
+ñ :r   c                ó    <€ V ^8„  d   QhRS[ /# r'   )r   )r   r   s   "€r   r   rG   ž   s   ø€ ÷ ñ ñ 
+ñr   c           	   ƒ  óx  "  € VP                   pVP                  p V P                  P                  VP                  4      G R j  x€L
+ pV P                  V4       \
+        VVRVR7      #  L$  \        P                   d    h \         d-   p\
+        TTR\        T4      P                  R7      u R p?# R p?ii ; i5i)NÚready)r   r   r   r   Úfailed)r   r   r   r   )r   r   rE   Úembed_documentrR   rf   r   ÚasyncioÚCancelledErrorÚ	ExceptionÚtyper   )r/   r\   r   r   r   Úexcs   &&    r   Ú_process_chunkÚ EmbeddingPipeline._process_chunkž   sµ   é € ð
+ —>‘>ˆØ×)Ñ)ˆð	Ø"×4Ñ4×CÑCØ—
+‘
+ó÷ ˆIð 
+×$Ñ$ YÔ/ä(Ø!Ø)ØØ#ô	ð 
+ñ
+øô ×%Ñ%ô 	Øäô 	Ü(Ø!Ø)ØÜ ›9×-Ñ-ô	õ 
+ûð	üsL   ‚B:œ(A+ ÁA)Á#A+ Á(B:Á)A+ Á+B7Â
+B7Â!B2Â,B7Â-B:Â2B7Â7B:c                ó&   <€ V ^8„  d   QhRS[ RS[/# rN   )r   r%   )r   r   s   "€r   r   rG   ¿   s#   ø€ ÷ A
+ñ A
+áðA
+ñ 
+!ñA
+r   c           
+   ƒ  óJ  a "  € \         P                  ! 4       pS P                  V4      pV'       gP   \        ^ ^ ^ RS P                  P
+                  S P                  P                  S P                  P                  RR7      # . p\        ^ \        V4      S P                  4       FO  pVWUS P                  ,            p\        P                  ! V 3R lV 4       !  G Rj  x€L
+ pVP                  V4       KQ  	  \        R V 4       4      p\        V4      V,
+          p	\         P                  ! 4       V,
+          p
+\        \        V4      VV	\        V4      S P                  P
+                  S P                  P                  S P                  P                  \!        V
+^4      R7      #  LÄ5i)zŸ
+Generate embeddings for a collection of document chunks.
+
+Results preserve the original input order.
+Individual chunk failures do not terminate the pipeline.
+r,   )r-   r.   r3   r4   r5   r6   r7   r8   c              3   óF   <"  € T F  pSP                  V4      x € K  	  R # 5i)N)rr   )Ú.0r\   r/   s   & €r   Ú	<genexpr>Ú-EmbeddingPipeline.generate.<locals>.<genexpr>æ   s&   øé € ð á!&˜ð ×'Ñ'¨×.Ð.Û!&ùs   ƒ!Nc              3   ó@   "  € T F  pVP                   R 8H  x € K  	  R# 5i)rj   N)r   )rw   Úoutcomes   & r   rx   ry   î   s    é € ð 
+á#ð 
+N‰N˜gÖ%Û#ùs   ‚r   )ÚtimeÚperf_counterr^   r%   rJ   r5   r6   r7   Úrangerd   rF   rm   ÚgatherÚextendÚsumr:   Úround)r/   rO   Ú
+started_atÚvalidated_chunksr4   ÚstartÚbatchÚ
+batch_resultsÚ
+successfulrk   Údurations   f&         r   ÚgenerateÚEmbeddingPipeline.generate¿   ss  øé € ô ×&Ò&Ó(ˆ
+à×0Ñ0°Ó8ÐçÜ*ØØ"#ØØØŸ™×/Ñ/Ø—m‘m×)Ñ)ØŸ=™=×3Ñ3Ø!$ô	ð 	
+ð ˆäØ
+ÜÐ Ó!ØO‰Oö
+ˆEð
+ %Ø˜dŸo™oÕ-ðˆEô #*§.¢.ôá!&óñ#÷ ˆMð 
+O‰O˜MÖ*ñ!
+ô$ ñ 
+á#ó
+ó 
+ˆ
+ô
+ X“ Õ+ˆä×$Ò$Ó&¨Õ3ˆä&ÜÐ-Ó.Ø(Ø Ü˜8“_Ø—]‘]×+Ñ+Ø—-‘-×%Ñ%Ø—}‘}×/Ñ/Ü" 8¨QÓ/ô	
+ð 		
+ñ%ùs   ƒCF#ÃF!ÃCF#)rF   rE   rJ   N)é    )
+r   r   r   r   r?   rK   Ústaticmethodr^   rf   rr   rŠ   r!   r"   r#   s   @r   rC   rC   0   sJ   ø‡ € ñ÷3ò 3ð ÷1ó ð1÷fð ÷<ð ÷BA
+ö A
+r   rC   )rm   r|   Údataclassesr   Útypingr   Úapp.schemas.embeddingsr   Ú)app.services.embeddings.embedding_servicer   Ú app.services.embeddings.metadatar   r   r%   ro   r=   rA   rC   r   r   r   Ú<module>r“      s   ðÛ Û å !Ý å 2Ý FÝ Añ $˜dÔ#÷"ð "ó $ð"ñ $˜dÔ#÷:ð :ó $ð:ô$:˜Yô :ô.Ð"8ô .÷P
+ó P
+r   
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\__pycache__\embedding_service.cpython-314.pyc ==========
++
+    µºëjŽ  ã                   ój   € ^ RI t ^ RIHtHt ^ RIHtHtHt ^ RIH	t	 ^ RI
+Ht ^ RIH
+t
+  ! R R4      tR# )	é    N)ÚEmbeddingSettingsÚget_embedding_settings)ÚEmbeddingRequestÚEmbeddingResultÚ
+EmbeddingTask)ÚBaseEmbeddingProvider)ÚEmbeddingInputTooLargeError)ÚGeminiEmbeddingProviderc                   ó   a € ] tR t^t o RV 3R lR lltV 3R lR ltV 3R lR ltV 3R lR	 ltV 3R
+ lR ltV 3R lR
+ lt	Rt
+V tR# )ÚEmbeddingServiceNc                óB   <€ V ^8„  d   QhRS[ R,          RS[R,          /# )é   ÚproviderNÚsettings)r   r   )ÚformatÚ
+__classdict__s   "€ÚWC:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\embedding_service.pyÚ__annotate__ÚEmbeddingService.__annotate__   s)   ø€ ÷ ñ á'¨$Õ.ðñ $ dÕ*ñó    c                óÐ   € T;'       g    \        4       V n        Ve	   Wn        R # V P                  P                  R8X  d   \        V P                  4      V n        R # \	        R4      h)NÚgeminizUnsupported embedding provider.)r   r   r   r
+   Ú
+ValueError)Úselfr   r   s   &&&r   Ú__init__ÚEmbeddingService.__init__   sY   € ð
+ !×<Ð<Ô$:Ó$<ˆŒ
+àÒØ$ŽMà
+]‰]×
+#Ñ
+# xÔ
+/Ü3Ø—
+‘
+óˆDŽMô
+ Ø1óð 
+r   c                ó,   <€ V ^8„  d   QhRS[ RS[RS[/# )r   ÚtextÚtaskÚreturn)Ústrr   r   )r   r   s   "€r   r   r   /   s)   ø€ ÷ 
+ñ 
+áð
+ñ ð
+ñ 
+ñ	
+r   c                ó¼   € \        V\        4      '       g   \        R 4      h\        V4      V P                  P
+                  8”  d   \
+        R4      h\        VVR7      # )zText must be a string.z)Input exceeds configured character limit.)r   r   )Ú
+isinstancer!   Ú	TypeErrorÚlenr   Úmax_input_charactersr	   r   )r   r   r   s   &&&r   Ú_build_requestÚEmbeddingService._build_request/   sX   € ô ˜$¤×$Ò$ÜÐ4Ó5Ð5äˆt‹9t—}‘}×9Ñ9Ô9Ü-Ø;óð 
+ô  ØØô
+ð 	
+r   c                ó&   <€ V ^8„  d   QhRS[ RS[/# ©r   r   r    ©r!   r   )r   r   s   "€r   r   r   B   ó   ø€ ÷ 
+2ñ 
+2áð
+2ñ 
+ñ
+2r   c              ƒ  ó”   "  € V P                  V\        P                  4      pV P                  P	                  V4      G R j  x€L
+ #  L5i©N)r'   r   ÚDOCUMENTr   Úembed©r   r   Úrequests   && r   Úembed_documentÚEmbeddingService.embed_documentB   s@   é € ð
+ ×%Ñ%ØÜ×"Ñ"ó
+ˆð
+ —]‘]×(Ñ(¨Ó1×1Ð1Ñ1ùó   ‚?AÁAÁAc                ó&   <€ V ^8„  d   QhRS[ RS[/# r*   r+   )r   r   s   "€r   r   r   N   r,   r   c              ƒ  ó”   "  € V P                  V\        P                  4      pV P                  P	                  V4      G R j  x€L
+ #  L5ir.   )r'   r   ÚQUERYr   r0   r1   s   && r   Úembed_queryÚEmbeddingService.embed_queryN   s@   é € ð
+ ×%Ñ%ØÜ×Ñó
+ˆð
+ —]‘]×(Ñ(¨Ó1×1Ð1Ñ1ùr5   c                óF   <€ V ^8„  d   QhRS[ S[,          RS[ S[,          /# )r   Útextsr    )Úlistr!   r   )r   r   s   "€r   r   r   Z   s(   ø€ ÷ 
+ñ 
+á‘Cyð
+ñ 
+‰oÕ	ñ
+r   c              ƒ  ó’  a aa"  € \        V\        4      '       g   \        R 4      hV'       g   \        R4      hV Uu. uF#  pS P	                  V\
+        P                  4      NK%  	  pp\        P                  ! S P                  P                  4      oV V3R lo\        P                  ! V3R lV 4       !  G Rj  x€L
+ # u upi  L	5i)z!Texts must be provided as a list.zDocument batch cannot be empty.c              “   óâ   <"  € S;_uu_4       GR j  x€L
+  SP                   P                  V 4      G R j  x€L
+ uuR R R 4      GR j  x€L
+  #  L9 L L	  + GR j  x€L 
+ '       g   i     R # ; i5ir.   )r   r0   )r2   r   Ú	semaphores   &€€r   ÚprocessÚ1EmbeddingService.embed_documents.<locals>.processq   s9   øé € ß —y’yØ!Ÿ]™]×0Ñ0°Ó9×9÷ !—y”yÙ9÷ !—y—y“yüsY   ƒA/’A“A/–AµA¶A¹
+A/ÁAÁA/ÁAÁA/ÁA,	ÁAÁ
+A,	Á$A,	Á&	A/c              3   ó4   <"  € T F
+  pS! V4      x € K  	  R # 5ir.   © )Ú.0r2   rA   s   & €r   Ú	<genexpr>Ú3EmbeddingService.embed_documents.<locals>.<genexpr>v   s   øé € Ð
+7©h 7‰gg×Ð«hùs   ƒN)r#   r=   r$   r   r'   r   r/   ÚasyncioÚ	Semaphorer   Úmax_concurrent_requestsÚgather)r   r<   r   ÚrequestsrA   r@   s   f&  @@r   Úembed_documentsÚ EmbeddingService.embed_documentsZ   s»   úé € ô
+ ˜%¤×&Ò&ÜÐ?Ó@Ð@çÜÐ>Ó?Ð?ñ ó
+ñ
+ ð	 
+×ÑØÜ×&Ñ&ö
+ñ ð 	ð 
+ô ×%Ò%ØM‰M×1Ñ1ó
+ˆ	ö	:ô —^’^Ü
+7©hÓ
+7ñ
+÷ 
+ð 	
+ùò!
+ñ 
+ùs"   …)C¯C¾)C Á'ACÂ;CÂ<
+Cc                ó   <€ V ^8„  d   QhRR/# )r   r    NrD   )r   r   s   "€r   r   r   y   s   ø€ ÷ $ñ $˜Tñ $r   c              ƒ  óV   "  € V P                   P                  4       G R j  x€L
+  R #  L5ir.   )r   Úclose)r   s   &r   rQ   ÚEmbeddingService.closey   s   é € Øm‰m×!Ñ!Ó#×#Ô#ùs   ‚) '¡))r   r   )NN)Ú__name__Ú
+__module__Ú__qualname__Ú__firstlineno__r   r'   r3   r9   rM   rQ   Ú__static_attributes__Ú__classdictcell__)r   s   @r   r   r      sA   ø‡ € ÷ò ÷(
+ð 
+÷&
+2ð 
+2÷
+2ð 
+2÷
+ð 
+÷>$ö $r   r   )rH   Úapp.core.embedding_configr   r   Úapp.schemas.embeddingsr   r   r   Úapp.services.embeddings.baser   Ú"app.services.embeddings.exceptionsr	   Ú'app.services.embeddings.gemini_providerr
+   r   rD   r   r   Ú<module>r^      s2   ðÛ ÷÷
+ñ õ ?õõ÷
+a$ó a$r   
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\__pycache__\exceptions.cpython-314.pyc ==========
++
+    &ºëj  ã                   ó¶   €  ! R  R] 4      t ! R R]4      t ! R R]4      t ! R R]4      t ! R R	]4      t ! R
+ R]4      t ! R R
+]4      t ! R R]4      tR# )c                   ó   € ] tR t^tRtRtR# )ÚEmbeddingErrorz(Base exception for embedding operations.© N)Ú__name__Ú
+__module__Ú__qualname__Ú__firstlineno__Ú__doc__Ú__static_attributes__r   ó    ÚPC:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\exceptions.pyr   r      s   † Ý2r   r   c                   ó   € ] tR t^tRtR# )ÚEmbeddingConfigurationErrorr   N©r   r   r   r   r
+   r   r   r   r   r      ó   † Ûr   r   c                   ó   € ] tR t^	tRtR# )ÚEmbeddingAuthenticationErrorr   Nr   r   r   r   r   r   	   r   r   r   c                   ó   € ] tR t^
+tRtR# )ÚEmbeddingRateLimitErrorr   Nr   r   r   r   r   r   
+   r   r   r   c                   ó   € ] tR t^tRtR# )ÚEmbeddingTimeoutErrorr   Nr   r   r   r   r   r      r   r   r   c                   ó   € ] tR t^tRtR# )ÚEmbeddingProviderErrorr   Nr   r   r   r   r   r      r   r   r   c                   ó   € ] tR t^tRtR# )ÚEmbeddingValidationErrorr   Nr   r   r   r   r   r      r   r   r   c                   ó   € ] tR t^tRtR# )ÚEmbeddingInputTooLargeErrorr   Nr   r   r   r   r   r      r   r   r   N)	Ú	Exceptionr   r   r   r   r   r   r   r   r   r   r   Ú<module>r      sf   ðô3Yô 3ô	 .ô 	ô	 >ô 	ô	˜nô 	ô	˜Nô 	ô	˜^ô 	ô	˜~ô 	ô	Ð":ö 	r   
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\__pycache__\gemini_provider.cpython-314.pyc ==========
++
+    OÀëj`!  ã                   óœ   € ^ RI t ^ RIt^ RIt^ RIHt ^ RIHtHt ^ RIH	t	 ^ RI
+HtHtH
+t
+ ^ RIHt ^ RIHtHtHtHtHtHt  ! R R	]4      tR# )
+é    N)Úgenai)ÚerrorsÚtypes©ÚEmbeddingSettings)ÚEmbeddingRequestÚEmbeddingResultÚ
+EmbeddingTask)ÚBaseEmbeddingProvider)ÚEmbeddingAuthenticationErrorÚEmbeddingInputTooLargeErrorÚEmbeddingProviderErrorÚEmbeddingRateLimitErrorÚEmbeddingTimeoutErrorÚEmbeddingValidationErrorc                   óÄ   a € ] tR t^t o RtRV 3R lR llt]V 3R lR l4       t]V 3R lR l4       t]V 3R	 lR
+ l4       t	V 3R lR lt
+V 3R
+ lR ltV 3R lR ltRt
+V tR# )ÚGeminiEmbeddingProviderzGemini Embedding 2 provider.Nc                ó    <€ V ^8„  d   QhRS[ /# )é   Úsettingsr   )ÚformatÚ
+__classdict__s   "€ÚUC:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\gemini_provider.pyÚ__annotate__Ú$GeminiEmbeddingProvider.__annotate__   s   ø€ ÷ 
+ñ 
+á#ñ
+ó    c           
+     ó„  € Wn         Vf‹   VP                  '       g   \        R4      h\        P                  ! VP                  \
+        P                  ! \        VP                  R,          4      \
+        P                  ! ^R7      R7      R7      V n
+        MW n
+        \        P                  ! VP                  4      V n        R # )Nz!GEMINI_API_KEY is not configured.iè  )Úattempts)ÚtimeoutÚ
+retry_options)Úapi_keyÚhttp_options)r   r!   r   r   ÚClientr   ÚHttpOptionsÚintÚrequest_timeout_secondsÚHttpRetryOptionsÚclientÚasyncioÚ	SemaphoreÚmax_concurrent_requestsÚ
+_semaphore)Úselfr   r(   s   &&&r   Ú__init__Ú GeminiEmbeddingProvider.__init__   sž   € ð
+ !Œ
+àŠ>Ø×#×#Ð#Ü2Ø7óð ô  Ÿ,š,Ø ×(Ñ(Ü"×.Ò.ÜØ ×8Ñ8¸4Õ?óô #(×"8Ò"8Ø!"ô#ô	ô
+ˆDKð !ŒKä!×+Ò+Ø×,Ñ,ó
+ˆŽr   c                ó&   <€ V ^8„  d   QhRS[ RS[/# ©r   ÚrequestÚreturn)r   Ústr)r   r   s   "€r   r   r   <   s   ø€ ÷ 
+ñ 
+Ñ 0ð 
+±Sñ 
+r   c                óÐ   € V P                   \        P                  8X  d   RV P                   2# V P                   \        P                  8X  d   RV P                   2# \        R4      h)z.Prepare model-specific retrieval instructions.ztitle: none | text: ztask: search result | query: zUnsupported embedding task.)Útaskr
+   ÚDOCUMENTÚtextÚQUERYr   )r2   s   &r   Ú_prepare_inputÚ&GeminiEmbeddingProvider._prepare_input;   sa   € ð <‰<œ=×1Ñ1Ô1Ø)¨'¯,©,¨Ð8Ð8à<‰<œ=×.Ñ.Ô.à/Ø—<‘<.ð"ð
+ô
+ 'Ø)ó
+ð 	
+r   c                ó    <€ V ^8„  d   QhRS[ /# )r   Úexc)Ú	Exception)r   r   s   "€r   r   r   M   s   ø€ ÷ (&ñ (&¡ñ (&r   c                ó€  € \        V \        \        P                  34      '       d   \        # \        V \        P
+                  4      '       dî   V P                  pV P                  ;'       g    RP                  4       pV P                  ;'       g    RP                  4       pVR
+9   d   \        # VR8X  d   \        # VR9   d   \        # VR9   g   RV9   g   RV9   g   RV9   d   \        # Ve   RTu;8:  d   R8:  d	    \        #  Ve   RTu;8:  d   R	8:  d	    \        #  VR
+9   d   \        # VR9   d   \        # \        # )z+Map SDK failures to application exceptions.Ú i­  ztoken limitzinput too longztoo many tokensiô  iW  i  ió  )i‘  i“  )i˜  iø  )i  )ÚRESOURCE_EXHAUSTED)ÚUNAUTHENTICATEDÚPERMISSION_DENIED)Ú
+isinstanceÚTimeoutErrorr)   r   r   ÚAPIErrorÚcodeÚmessageÚlowerÚstatusÚupperr   r   r
+   r   )r=   Ústatus_coderH   rJ   s   &   r   Ú_classify_exceptionÚ+GeminiEmbeddingProvider._classify_exceptionL   s&  € ô cœL¬'×*>Ñ*>Ð?×@Ò@Ü(Ð(äcœ6Ÿ?™?×+Ò+ØŸ(™(ˆKØ—{‘{×(Ð( b×/Ñ/Ó1ˆGØ—j‘j×&Ð& B×-Ñ-Ó/ˆFà˜jÔ(Ü3Ð3à˜cÔ!Ü.Ð.à˜jÔ(Ü,Ð,ð ˜vÔ%Ø  GÔ+Ø# wÔ.Ø$¨Ô/ä2Ð2àÒ&¨3°+Ö+DÀÕ+DÜ-Ð-ð ,Eð Ò&¨3°+Ö+DÀÕ+DÜ-Ð-ð ,Eð Ð0Ô0Ü.Ð.àÐAÔAÜ3Ð3ä%Ð%r   c                ó,   <€ V ^8„  d   QhRS[ RS[ RS[/# )r   ÚerrorÚoriginal_exceptionr3   )r>   Úbool)r   r   s   "€r   r   r   x   s'   ø€ ÷ ñ Ùðá%ðñ 
+ñr   c                ó†   € \        V \        \        34      '       d   R# \        V\        P                  4      '       d   R# R# )zOnly retry transient failures.TF)rD   r   r   r   ÚServerError)rP   rQ   s   &&r   Ú
+_is_retryableÚ%GeminiEmbeddingProvider._is_retryablew   s>   € ô Øä'Ü%ð
+÷
+ò 
+ñ äÐ(¬&×*<Ñ*<×=Ò=Ùár   c                ó4   <€ V ^8„  d   QhRS[ S[R3,          /# )r   r3   .)ÚtupleÚfloat)r   r   s   "€r   r   r   Œ   s   ø€ ÷ ñ ©%±°s°
+Õ*;ñ r   c                ó  € Vf   \        R4      h \        ;QJ d    . R V 4       F  NK  	  5M
+! R V 4       4      p\        T4      T P                  P                  8w  d0   \        RT P                  P                   R\        T4       R24      h\        ;QJ d    R T 4       F  '       d   K   R	M	  R
+M
+! R T 4       4      '       g   \        R4      hT#   \        \        \        3 d   p\        R4      ThRp?ii ; i)z6Validate embedding dimensions and numerical integrity.Nz"Provider returned an empty vector.c              3   ó8   "  € T F  p\        V4      x € K  	  R # 5i©N)rY   ©Ú.0Úvalues   & r   Ú	<genexpr>Ú;GeminiEmbeddingProvider._validate_vector.<locals>.<genexpr>•   s   é € ð Ù*0 ”e—«&ùs   ‚z(Provider returned invalid vector values.z	Expected z dimensions, received Ú.c              3   óN   "  € T F  p\         P                  ! V4      x € K  	  R # 5ir\   )ÚmathÚisfiniter]   s   & r   r`   ra   £   s   é € Ð<±V¨E”4—=’= ×'Ð'³Vùs   ‚#%FTz"Vector contains non-finite values.)	r   rX   Ú	TypeErrorÚ
+ValueErrorÚ
+OverflowErrorÚlenr   Ú
+dimensionsÚall)r-   ÚvaluesÚvectorr=   s   &&  r   Ú_validate_vectorÚ(GeminiEmbeddingProvider._validate_vectorŒ   sú   € ð Š>Ü*Ø4óð 
+ð	ß”Uñ Ù*0ó—U‘Uñ Ù*0óó ˆFô ˆv‹;˜$Ÿ-™-×2Ñ2Ô2Ü*Ø˜DŸM™M×4Ñ4Ð5ð 6Ü ›K˜=¨ð+óð 
+÷
+ ‹sÑ<±VÓ<ssŠsÑ<±VÓ<×<Ò<Ü*Ø4óð 
+ð ˆ
+øô! œ:¤}Ð5ô 	Ü*Ø:óàð
+ûð	ús   ‘
+C œ!C ÃC>Ã-C9Ã9C>c                ó&   <€ V ^8„  d   QhRS[ RS[/# r1   )r   r	   )r   r   s   "€r   r   r   ª   s#   ø€ ÷ W
+ñ W
+á!ðW
+ñ 
+ñW
+r   c              ƒ  óÒ  "  € \        VP                  4      V P                  P                  8”  d   \	        R4      hV P                  V4      pV P                  ;_uu_4       GRj  x€L
+  \        V P                  P                  ^,           4       EF  p V P                  P                  P                  P                  V P                  P                  V\        P                  ! V P                  P                   R7      R7      G Rj  x€L
+ p\#        VRR4      pV'       d   \        V4      ^8w  d   \%        R4      hV P'                  V^ ,          P(                  4      p\+        VV P                  P                  R\        V4      R7      u uuRRR4      GRj  x€L
+  # 	  RRR4      GRj  x€L
+  \C        R4      h ELV L¶ L'  \,        P.                   d    h \$         d    h \0         dØ   pT P3                  T4      pT! R	4      p	T P5                  Y—4      '       d   Y0P                  P                  8¼  d   Y—h\7        T P                  P8                  T P                  P:                  ^T,          ,          4      p
+T
+\<        P>                  ! R
+R4      ,          p
+\,        P@                  ! T
+4      G Rj  x€L 
+   Rp?EK/  Rp?ii ; i EL  + GRj  x€L 
+ '       g   i     EL4; i5i)
+z,Generate one embedding with bounded retries.z)Input exceeds configured character limit.N)Úoutput_dimensionality)ÚmodelÚcontentsÚconfigÚ
+embeddingsz$Unexpected embedding response count.Úgemini)rm   rs   Úproviderrj   z Gemini embedding request failed.g      è?g      ô?zEmbedding generation failed.)"ri   r8   r   Úmax_input_charactersr
+   r:   r,   ÚrangeÚmax_retriesr(   ÚaioÚmodelsÚ
+embed_contentrs   r   ÚEmbedContentConfigrj   Úgetattrr   rn   rl   r	   r)   ÚCancelledErrorr>   rM   rU   ÚminÚretry_max_delay_secondsÚretry_base_delay_secondsÚrandomÚuniformÚsleepr   )r-   r2   Ú
+prepared_textÚattemptÚresponserv   rm   r=   Ú
+error_typerP   Údelays   &&         r   ÚembedÚGeminiEmbeddingProvider.embedª   s\  é € ô ˆw|‰|Ó˜tŸ}™}×AÑAÔAÜ-Ø;óð 
+ð ×+Ñ+¨GÓ4ˆ
+à—?—?—?“?ä Ø—
+‘
+×)Ñ)¨AÕ-÷ðA/à"Ÿk™kŸo™o×4Ñ4×BÑBØ"&§-¡-×"5Ñ"5Ø%2Ü#(×#;Ò#;à$(§M¡M×$<Ñ$<ô$ð Có ÷ ð ô ")Ø Ø$Øó"J÷ 'Ü˜z›?¨aÔ/ä6ØBóð ð "×2Ñ2Ø" 1
+×,Ñ,óFô +Ø%Ø"Ÿm™m×1Ñ1Ø!)Ü#& v£;ô	ñ ÷I #—?’?ñ÷ #—?ôP %Ø*ó
+ð 	
+òQ #ññ #øôV ×-Ñ-ô Øä/ô Øä ô /Ø!%×!9Ñ!9¸#Ó!>Já&Ø:óEð
+ !×.Ñ.¨u×:Ò:Ø"§m¡m×&?Ñ&?Ô?à#Ð,äØŸ
+™
+×=Ñ=ØŸ
+™
+×>Ñ>Ø <õ)óEð œVŸ^š^¨D°$Ó7Õ7Eä!Ÿ-š-¨Ó.×.×.Ð.ûð+/ú÷c #—?—?”?üsÃ   ‚A#K'Á%F;Á&K'Á)+K
+ÂA2GÄF>
+ÄBGÆ	K
+Æ
+K'ÆG ÆK'ÆK
+Æ K'Æ+KÆ,K'Æ>GÇ K'ÇK	Ç!
+K	Ç,K	Ç-CJ?	Ê2J5Ê3J?	Ê8K
+Ê?K	ËK
+ËK'Ë
+K$	ËKË
+K$	ËK$	Ë	K'c                ó   <€ V ^8„  d   QhRR/# )r   r3   N© )r   r   s   "€r   r   r     s   ø€ ÷ ñ ˜Tñ r   c              ƒ  ó¼   "  € \        V P                  RR4      pVf   R# \        VRR4      pVe(   V! 4       p\        VR4      '       d
+   VG Rj  x€L
+  R# R# R#  L
+5i)z"Close the asynchronous SDK client.r|   NÚacloseÚ	__await__)r€   r(   Úhasattr)r-   Ú
+aio_clientÚcloseÚresults   &   r   r–   ÚGeminiEmbeddingProvider.close  sn   é € ô ØK‰KØØó
+ˆ
+ð ÒÙäØØØó
+ˆð ÒÙ“WˆFäv˜{×+Ò+Ø—’ñ ,ñ ñ ùs   ‚A
+AÁAÁA)r,   r(   r   r\   )Ú__name__Ú
+__module__Ú__qualname__Ú__firstlineno__Ú__doc__r.   Ústaticmethodr:   rM   rU   rn   r   r–   Ú__static_attributes__Ú__classdictcell__)r   s   @r   r   r      sp   ø‡ € Ù&÷
+ò 
+ð> ÷
+ó ð
+ð  ÷(&ó ð(&ðT ÷ó ð÷(ð ÷<W
+ð W
+÷rö r   r   )r)   rd   r…   Úgoogler   Úgoogle.genair   r   Úapp.core.embedding_configr   Úapp.schemas.embeddingsr   r	   r
+   Úapp.services.embeddings.baser   Ú"app.services.embeddings.exceptionsr   r
+   r   r   r   r   r   r   r   r   Ú<module>r§      s?   ðÛ Û Û 
+å ß &å 7÷ñ õ
+ ?÷÷ ô@Ð3ö @r   
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\__pycache__\metadata.cpython-314.pyc ==========
++
+    Äëjž  ã                   ó   € ^ RI t R R ltR# )é    Nc                ó0   € V ^8„  d   QhR\         R\         /# )é   ÚtextÚreturn)Ústr)Úformats   "ÚNC:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\metadata.pyÚ__annotate__r
+      s   € ÷ 
+2ñ 
+2œsð 
+2¤sñ 
+2ó    c                óÔ   € \        V \        4      '       g   \        R4      hV '       g   \        R4      hV P	                  R4      p\
+        P                  ! V4      P                  4       # )z:
+Calculate a deterministic SHA-256 hash of chunk content.
+zChunk content must be a string.zChunk content cannot be empty.zutf-8)Ú
+isinstancer   Ú	TypeErrorÚ
+ValueErrorÚencodeÚhashlibÚsha256Ú	hexdigest)r   Ú
+normalizeds   & r	   Úcompute_content_hashr      sR   € ô
+ dœC× Ò ÜÐ9Ó:Ð:çÜÐ9Ó:Ð:à—‘˜WÓ%€Jä>Š>˜*Ó%×/Ñ/Ó1Ð1r   )r   r   © r   r	   Ú<module>r      s
+   ðÛ ÷
+2r   
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\__pycache__\retrieval_benchmark.cpython-314.pyc ==========
++
+    ˜"ìj·  ã                  óÀ   € ^ RI Ht ^ RIt^ RIt^ RIt^ RIt^ RIHt ^ RIH	t	H
+t
+ ]! RRR7       ! R R4      4       tR	 R
+ ltR R lt
+R
+ R ltRR R lltRR R lltR# )é    )ÚannotationsN)Ú	dataclass)ÚAnyÚCallableT)ÚfrozenÚslotsc                  óh   € ] tR t^t$ R]R&   R]R&   R]R&   R]R&   R]R&   R]R&   R]R	&   R]R
+&   RtR# )
+ÚBenchmarkResultÚintÚ
+iterationsÚwarmup_iterationsÚfloatÚmean_latency_msÚmedian_latency_msÚp95_latency_msÚminimum_latency_msÚmaximum_latency_msÚthroughput_per_second© N)Ú__name__Ú
+__module__Ú__qualname__Ú__firstlineno__Ú__annotations__Ú__static_attributes__r   ó    ÚYC:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\retrieval_benchmark.pyr
+   r
+      s1   ‡ àƒOØÓØÓØÓØÓØÓØÓØ × r   r
+   c               ó$   € V ^8„  d   QhRRRRRR/# )é   r   r   r
+   ÚreturnÚNoner   )Úformats   "r   Ú__annotate__r#      s&   € ÷ 
+ñ 
+Øð
+àð
+ð 
+ñ
+r   c                óþ   € \        V \        4      '       g   \        V \        4      '       d   V ^ 8:  d   \        R4      h\        V\        4      '       g   \        V\        4      '       d   V^ 8  d   \        R4      hR# )r   z&iterations must be a positive integer.z1warmup_iterations must be a non-negative integer.N)Ú
+isinstanceÚboolr   Ú
+ValueError)r   r
+   s   &&r   Ú_validate_iterationsr(      sl   € ô
+ 	:œt×$Ò$Ü˜*¤c×*Ò*Ø˜Œ?äÐAÓBÐBô 	Ð$¤d×+Ò+ÜÐ+¬S×1Ò1Ø˜qÔ äØ?ó
+ð 	
+ñ !r   c               ó$   € V ^8„  d   QhRRRRRR/# )r   Úvaluesúlist[float]Ú
+percentiler   r    r   )r"   s   "r   r#   r#   -   s!   € ÷ ñ ˜ð °ð ¸5ñ r   c                ó<  € \        V 4      p\        V4      ^8X  d
+   V^ ,          # \        V4      ^,
+          V,          p\        V4      p\        V^,           \        V4      ^,
+          4      pW4,
+          pW$,          ^V,
+          ,          W%,          V,          ,           # )z0Calculate percentile using linear interpolation.)ÚsortedÚlenr   Úmin)r*   r,   ÚorderedÚpositionÚlower_indexÚupper_indexÚfractions   &&     r   Ú_percentiler6   -   s†   € ô V‹n€Gä
+ˆ7ƒ|qÔØqzÐäG“˜qÕ  JÕ.€HÜh“-€KÜk A•o¤s¨7£|°aÕ'7Ó8€KàÕ%€Hð 	Õ  H¥Õ-Ø
+Õ
+ Õ
+)õ	*ðr   c               ó(   € V ^8„  d   QhRRRRRRRR/# )	r   Ú	latenciesr+   r
+   r   Útotal_elapsed_secondsr   r    r
+   r   )r"   s   "r   r#   r#   A   s0   € ÷ ñ Øðàðð !ðð ñ	r   c                ó  € \        V 4      p\        \        V 4      T\        P                  ! V 4      \        P
+                  ! V 4      \
+        V R 4      \        V 4      \        V 4      V^ 8”  d   \        V 4      V,          R7      # RR7      # )gffffffî?g        )r   r
+   r   r   r   r   r   r   )	Úsumr
+   r/   Ú
+statisticsÚmeanÚmedianr6   r0   Úmax)r8   r
+   r9   Ú
+total_latencys   &&& r   Ú
+_build_resultrA   A   s~   € ô
+ ˜	“N€MäÜy“>Ø+Ü"Ÿš¨	Ó2Ü$×+Ò+¨IÓ6Ü" 9¨dÓ3Ü˜y›>Ü˜y›>ð % qÔ(ô 
+	‹NÐ2Õ2ô
+ð 
+ð ô
+ð 
+r   c               ó(   € V ^8„  d   QhRRRRRRRR/# ©r   ÚfunctionzCallable[[], Any]r   r   r
+   r    r
+   r   )r"   s   "r   r#   r#   X   s0   € ÷ 6ñ 6Øð6àð6ð ð6ð ñ	6r   c                ó  € \        W4       \        V 4      '       g   \        R4      h\        V4       F]  pV ! 4       p\        P
+                  ! V4      '       g   K(  \        P                  ! V4      '       d   VP                  4        \        R4      h	  . p\        P                  ! 4       p\        V4       F¦  p\        P                  ! 4       pV ! 4       p\        P
+                  ! V4      '       d8   \        P                  ! V4      '       d   VP                  4        \        R4      h\        P                  ! 4       V,
+          pVP                  VR,          4       K¨  	  \        P                  ! 4       V,
+          p	\        VVV	4      # )z}
+Benchmark a synchronous callable.
+
+Awaitable results are rejected. Use benchmark_async_callable
+for asynchronous functions.
+úfunction must be callable.z;An asynchronous callable requires benchmark_async_callable.éè  )r(   ÚcallableÚ	TypeErrorÚrangeÚinspectÚisawaitableÚiscoroutineÚcloseÚtimeÚperf_counterÚappendrA   )
+rD   r   r
+   Ú_Úresultr8   Útotal_startÚstartÚelapsedÚ
+total_elapseds
+   &&&       r   Úbenchmark_callablerX   X   s;  € ô ˜Ô7äH×ÒÜÐ4Ó5Ð5ä
+Ð$Ö
+%ˆÙ“ˆä×Ò˜v×&Ô&Ü×"Ò" 6×*Ò*Ø—‘”äØMóð 
+ñ &ð  €Iä×#Ò#Ó%€Kä
+:Ö
+ˆÜ×!Ò!Ó#ˆá“ˆä×Ò˜v×&Ò&Ü×"Ò" 6×*Ò*Ø—‘”äØMóð 
+ô ×#Ò#Ó%¨Õ-ˆØ×Ñ˜ 4Ö(ñ ô  ×%Ò%Ó'¨+Õ5€MäØØØóð r   c               ó(   € V ^8„  d   QhRRRRRRRR/# rC   r   )r"   s   "r   r#   r#   ‘   s0   € ÷ ,ñ ,Øð,àð,ð ð,ð ñ	,r   c              ƒ  ó
+  a "  € \        W4       \        S 4      '       g   \        R4      hR V 3R llp\        V4       F  pV! 4       G Rj  x€L
+  K  	  . p\        P
+                  ! 4       p\        V4       F[  p\        P
+                  ! 4       pV! 4       G Rj  x€L
+  \        P
+                  ! 4       V,
+          pVP
+                  VR,          4       K]  	  \        P
+                  ! 4       V,
+          p	\        VVV	4      #  L² Lg5i)zˆ
+Benchmark an asynchronous callable sequentially.
+
+Supports both async functions and synchronous functions
+returning awaitable results.
+rF   c               ó   € V ^8„  d   QhRR/# )r   r    r!   r   )r"   s   "r   r#   Ú.benchmark_async_callable.<locals>.__annotate__¢   s   € ÷ ñ ˜4ñ r   c               “  ór   <"  € S! 4       p \         P                  ! V 4      '       d
+   V G R j  x€L
+  R # R #  L5i)N)rK   rL   )rS   rD   s    €r   ÚexecuteÚ)benchmark_async_callable.<locals>.execute¢   s-   øé € Ù“ˆä×Ò˜v×&Ò&ØLŠLñ 'Ùùs   ƒ)7¬5­	7NrG   )r(   rH   rI   rJ   rO   rP   rQ   rA   )
+rD   r   r
+   r^   rR   r8   rT   rU   rV   rW   s
+   f&&       r   Úbenchmark_async_callabler`   ‘   sá   øé € ô ˜Ô7äH×ÒÜÐ4Ó5Ð5÷ð ô Ð$Ö
+%ˆÙ‹iŠñ &ð  €Iä×#Ò#Ó%€Kä
+:Ö
+ˆÜ×!Ò!Ó#ˆá‹iˆä×#Ò#Ó%¨Õ-ˆØ×Ñ˜ 4Ö(ñ
+ ô ×%Ò%Ó'¨+Õ5€MäØØØóð ñ! 	ñ 	ùs&   ƒA	DÁC?Á
+ADÂDÂA&DÄD)éd   é   )Ú
+__future__r   ÚasynciorK   r<   rO   Údataclassesr   Útypingr   r   r
+   r(   r6   rA   rX   r`   r   r   r   Ú<module>rg      sY   ðÝ "ã Û Û Û å !ß  ñ $˜dÔ#÷!ð !ó $ð!õ
+õ*õ(÷.6÷r,ñ ,r   
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\__pycache__\retrieval_evaluation.cpython-314.pyc ==========
++
+    ‡"ìj	
+  ã                  ó®   € ^ RI Ht ^ RIHt ^ RIHtHtHt ]! RRR7       ! R R4      4       t]! RRR7       ! R R	4      4       t	RR
+ R llt
+RR R
+ lltR# )é    )Úannotations)Ú	dataclass)ÚHashableÚMappingÚSequenceT)ÚfrozenÚslotsc                  óT   € ] tR t^t$ R]R&   R]R&   R]R&   R]R&   R]R&   R]R&   R	tR
+# )ÚRetrievalMetricsÚfloatÚprecision_at_kÚrecall_at_kÚmean_reciprocal_rankÚintÚrelevant_retrievedÚretrieved_countÚrelevant_count© N©Ú__name__Ú
+__module__Ú__qualname__Ú__firstlineno__Ú__annotations__Ú__static_attributes__r   ó    ÚZC:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\retrieval_evaluation.pyr   r      s&   ‡ àÓØÓØÓØÓØÓØ×r   r   c                  ó@   € ] tR t^t$ R]R&   R]R&   R]R&   R]R&   RtR# )	ÚAggregateRetrievalMetricsr   r
+   r   r   r   Úquery_countr   Nr   r   r   r   r   r      s   ‡ àÓØÓØÓØ×r   r   c               ó(   € V ^8„  d   QhRRRRRRRR/# )é   Ú
+retrieved_idszSequence[Hashable]Úrelevant_idsÚkr   Úreturnr   r   )Úformats   "r   Ú__annotate__r(      s0   € ÷ /ñ /Ø%ð/à$ð/ð ð/ð ñ	/r   c           
+     ó*  a
+€ \        V\        4      '       g   \        V\        4      '       d   V^ 8:  d   \        R4      h\	        \        V 4      4      \	        V 4      8w  d   \        R4      h\        V4      o
+S
+'       g   \        R4      h\
+        V RV 4      p\        V
+3R lV 4       4      pWB,          pV\	        S
+4      ,          pRp\        V^R7       F  w  r‰V	S
+9   g   K  RV,          p M	  \        VVVV\	        V4      \	        S
+4      R	7      # )
+zÇ
+Evaluate a single ranked retrieval result.
+
+Precision@K = relevant retrieved in top K / K
+Recall@K = relevant retrieved in top K / total relevant
+MRR = reciprocal rank of the first relevant result.
+zk must be a positive integer.z*retrieved_ids must not contain duplicates.z5relevant_ids must contain at least one relevant item.Nc              3  ó8   <"  € T F  qS9   g   K  ^x € K  	  R# 5i)é   Nr   )Ú.0ÚitemÚrelevant_sets   & €r   Ú	<genexpr>Ú%evaluate_retrieval.<locals>.<genexpr>3   s   øé € ð Ù$ˆd°Ñ(<Š“nùs   ƒ
+g        )Ústartg      ð?)r
+   r   r   r   r   r   )
+Ú
+isinstanceÚboolr   Ú
+ValueErrorÚlenÚsetÚlistÚsumÚ	enumerater   )r#   r$   r%   Úranked_resultsr   Ú	precisionÚrecallÚreciprocal_rankÚrankr-   r.   s   &&&       @r   Úevaluate_retrievalr?      s  ø€ ô !”T×Ò¤*¨Q´×"4Ò"4¸¸Q¼ÜÐ8Ó9Ð9ä
+Œ3ˆ}ÓÓ¤# mÓ"4Ô4ÜÐEÓFÐFä|Ó$€LçÜÐPÓQÐQä˜-¨¨Ð+Ó,€Näô Ù$óó Ðð #Õ&€IØ
+¤# lÓ"3Õ
+3€Fà€Oä °a×8‰
+ˆØ<ÖØ! DjˆOÙñ 9ô
+ Ø ØØ,Ø-Ü˜NÓ+Ü˜<Ó(ô
+ð r   c               ó(   € V ^8„  d   QhRRRRRRRR/# )r"   Úretrieved_by_queryz%Mapping[Hashable, Sequence[Hashable]]Úrelevant_by_queryr%   r   r&   r   r   )r'   s   "r   r(   r(   K   s0   € ÷ )ñ )Ø=ð)à<ð)ð ð)ð ñ	)r   c           	     óŠ  € V '       g   \        R4      h\        V 4      \        V4      8w  d   \        R4      hV  Uu. uF  p\        W,          W,          VR7      NK  	  pp\        V4      p\	        \        R V 4       4      V,          \        R V 4       4      V,          \        R V 4       4      V,          VR7      # u upi )zv
+Evaluate multiple queries using macro-averaged metrics.
+
+Every evaluated query must have at least one relevant item.
+z)At least one retrieval query is required.z4Retrieved and relevant query IDs must match exactly.)r#   r$   r%   c              3  ó8   "  € T F  qP                   x € K  	  R # 5i©N)r
+   ©r,   Úresults   & r   r/   Ú+evaluate_retrieval_batch.<locals>.<genexpr>j   s   é € ð 
+Ù07 f×!Ö!³ùó   ‚c              3  ó8   "  € T F  qP                   x € K  	  R # 5irE   )r   rF   s   & r   r/   rH   m   s   é € ð 
+Ù-4 6×Ö«WùrI   c              3  ó8   "  € T F  qP                   x € K  	  R # 5irE   )r   rF   s   & r   r/   rH   p   s   é € ð !
+Ù6=¨F×'Ö'³gùrI   )r
+   r   r   r    )r4   r6   r?   r5   r   r8   )rA   rB   r%   Úquery_idÚresultsÚcounts   &&&   r   Úevaluate_retrieval_batchrO   K   sî   € ÷ ÜÐDÓEÐEä
+ÐÓ¤#Ð&7Ó"8Ô8ÜØBó
+ð 	
+ñ +ó
+ñ +ˆHô 	Ø,Õ6Ø*Õ4Ø÷	
+ñ
+ +ð
+ ð ô 
+‹L€Eä$Üñ 
+Ù07ó
+ó 
+àõô ñ 
+Ù-4ó
+ó 
+àõô !ñ !
+Ù6=ó!
+ó 
+àõð ôð ùòs   ¼#C N)é   )Ú
+__future__r   Údataclassesr   Útypingr   r   r   r   r   r?   rO   r   r   r   Ú<module>rT      sa   ðÝ "å !ß .Ñ .ñ $˜dÔ#÷ð ó $ðñ $˜dÔ#÷ð ó $ð÷/÷d)ñ )r   
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\__pycache__\semantic_search.cpython-314.pyc ==========
++
+    Sìjë-  ã                  óæ   € ^ RI Ht ^ RIt^ RIt^ RIHt ^ RIHt ^ RIH	t	H
+t
+ ^ RIHt ^ RI
+Ht ^ RIHt R	t^
+t^dt ! R
+ R]4      t ! R R
+]4      t]! RR7       ! R R4      4       t ! R R4      tR# )é    )ÚannotationsN)ÚSequence)Ú	dataclass)Úand_Úselect)ÚSession)ÚChunkEmbedding)Ú
+DocumentChunki   c                  ó   € ] tR t^tRtRtR# )ÚSemanticSearchErrorz.Base exception for semantic search operations.© N©Ú__name__Ú
+__module__Ú__qualname__Ú__firstlineno__Ú__doc__Ú__static_attributes__r
+   ó    ÚUC:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\semantic_search.pyr   r      s   † Ý8r   r   c                  ó   € ] tR t^tRtRtR# )ÚSemanticSearchValidationErrorz0Raised when search input or filters are invalid.r
+   Nr   r
+   r   r   r   r      s   † Ý:r   r   T)Úfrozenc                  ó¤   € ] tR t^t$ R]R&   R]R&   R]R&   R]R&   R]R	&   R
+]R&   R
+]R&   R
+]R&   R
+]R&   R]R&   R]R&   R]R&   R]R&   R]R&   RtR# )ÚSemanticSearchResultÚstrÚchunk_idz	uuid.UUIDÚdocument_idÚintÚchunk_indexÚtextz	list[int]Úpage_numbersú
+int | NoneÚ
+start_pageÚend_pageÚfloatÚ
+similarityÚdistanceÚproviderÚmodelÚ
+dimensionsÚpipeline_versionÚchunking_versionr
+   N)r   r   r   r   Ú__annotations__r   r
+   r   r   r   r      sP   ‡ àƒMØÓØÓØ
+
+ƒIàÓØÓØÓàÓØƒOàƒMØƒJØƒOØÓØ×r   r   c                  óx   € ] tR t^3tRt]]]3R R lltR R lt	R R lt
+RR	R
+R	RR	RR	R
+R	RR	RR	RR	/R R lltRtR	# )ÚSemanticSearchServicea
+  
+PostgreSQL pgvector semantic retrieval service.
+
+Uses cosine distance to identify the most relevant
+document chunks.
+
+Supports metadata filtering by:
+- Document ID
+- Multiple document IDs
+- Chunking version
+- Embedding provider
+- Embedding model
+- Pipeline version
+c               ó(   € V ^8„  d   QhRRRRRRRR/# )é   Úvector_dimensionsr   Ú
+default_limitÚ	max_limitÚreturnÚNoner
+   )Úformats   "r   Ú__annotate__Ú"SemanticSearchService.__annotate__C   s2   € ÷ #ñ #àð#ð ð#ð ð	#ð
+ 
+ñ#r   c                	ó¬   € V\         8w  d   \        R \          R24      hV^8  d   \        R4      hW28  d   \        R4      hWn        W n        W0n        R# )z5Configured dimensions must match the database VECTOR(z	) column.z&Default search limit must be positive.z3Maximum limit cannot be smaller than default limit.N)ÚDATABASE_VECTOR_DIMENSIONSr   r3   r4   r5   )Úselfr3   r4   r5   s   &&&&r   Ú__init__ÚSemanticSearchService.__init__C   sr   € ð Ô :Ô:Ü/ðÜ4Ð5°Yð@óð 
+ð
+ ˜1ÔÜ/Ø8óð 
+ð Ô$Ü/ØEóð 
+ð "3ÔØ*ÔØ"Žr   c               ó    € V ^8„  d   QhRRRR/# )r2   Úquery_vectorúSequence[float]r6   zlist[float]r
+   )r8   s   "r   r9   r:   ^   s   € ÷ 'ñ 'à%ð'ð 
+ñ'r   c                	ó&  € \        V\        \        34      '       d   \        R 4      h\        V\        4      '       g   \        R4      h\        V4      V P                  8w  d&   \        RV P                   R\        V4       R24      h. pV F  p\        V\        4      '       g   \        V\        \        34      '       g   \        R4      h\        P                  ! V4      '       g   \        R4      hVP                  \        V4      4       Kƒ  	  V# )z+Query embedding must be a numeric sequence.z#Query embedding must be a sequence.z	Expected z dimensions, received Ú.z'Embedding contains a non-numeric value.z&Embedding contains a non-finite value.)
+Ú
+isinstancer   Úbytesr   r   Úlenr3   Úboolr   r&   ÚmathÚisfiniteÚappend)r=   rA   ÚvectorÚvalues   &&  r   Ú_validate_vectorÚ&SemanticSearchService._validate_vector^   s
+  € ô
+ l¤S¬% L×1Ò1Ü/Ø=óð 
+ô ˜,¬×1Ò1Ü/Ø5óð 
+ô ˆ|Ó × 6Ñ 6Ô6Ü/Ø˜D×2Ñ2Ð3ð 4Ü Ó-Ð.¨að1óð 
+ð
+ !ˆã!ˆEä˜%¤×&Ò&¬jØœœU|÷/ò /ô 4Ø=óð ô —=’= ×'Ò'Ü3Ø<óð ð 
+M‰Mœ% ›,Ö'ñ "ð  ˆ
+r   c               ó(   € V ^8„  d   QhRRRRRRRR/# )	r2   r   úuuid.UUID | NoneÚdocument_idsúSequence[uuid.UUID] | NoneÚmin_similarityúfloat | Noner6   r7   r
+   )r8   s   "r   r9   r:   ‡   s8   € ÷ Bñ Bà%ðBð 1ðBð %ð	Bð
+ 
+ñBr   c                	ó8  € Ve,   \        V\        P                  4      '       g   \        R4      hVeÎ   \        V\        \
+        34      '       d   \        R4      h\        V\        4      '       g   \        R4      hV'       g   \        R4      h\        ;QJ d    R V 4       F  '       g   K   RM	  RM
+! R V 4       4      '       d   \        R4      h\        \        V4      4      \        V4      8w  d   \        R4      hVe   Ve   \        R	4      hVeƒ   \        V\        4      '       g   \        V\        \        34      '       g   \        R
+4      h\        P                  ! V4      '       g   \        R4      hRTu;8:  d   R8:  g   M \        R
+4      hR # R # )NzDocument ID must be a UUID.z Document IDs must be a sequence.zDocument IDs cannot be empty.c              3  ó`   "  € T F$  p\        V\        P                  4      '       * x € K&  	  R # 5i)N)rE   ÚuuidÚUUID)Ú.0Úitems   & r   Ú	<genexpr>Ú:SemanticSearchService._validate_filters.<locals>.<genexpr>¦   s(   é € ð á(Dô ˜t¤T§Y¡YÓ/×/Ñ/Û(ùs   ‚,.TFz!Every document ID must be a UUID.z'Duplicate document IDs are not allowed.z*Use document_id or document_ids, not both.z#Minimum similarity must be numeric.z"Minimum similarity must be finite.ç      ð?z,Minimum similarity must be between -1 and 1.g      ð¿)rE   rX   rY   r   r   rF   r   ÚanyrG   ÚsetrH   r   r&   rI   rJ   )r=   r   rR   rT   s   &&&&r   Ú_validate_filtersÚ'SemanticSearchService._validate_filters‡   s  € ð Ò"¬:ØœŸ™÷,
+ò ,
+ô 0Ø-óð 
+ð Ò#ä˜,¬¬e¨×5Ò5Ü3Ø6óð ô ˜l¬H×5Ò5Ü3Ø6óð ÷  Ü3Ø3óð ÷ ‹sñ á(óssŠsñ á(ó÷ ò ô 4Ø7óð ô ”3|Ó$Ó%¬¨\Ó):Ô:Ü3Ø=óð ð Ò" |Ò'?Ü/Ø<óð 
+ð Ò%ä˜.¬$×/Ò/´zØ¤¤e ÷8ò 8ô 4Ø9óð ô —=’= ×0Ò0Ü3Ø8óð ð ˜>Ö0¨SÖ0Ü3ØBóð ñ 1ñ &r   ÚlimitNr   rR   r-   r)   r*   r,   rT   c               óD   € V ^8„  d   QhRRRRRRRRR	R
+RRR
+RRRRRRRRR/# )r2   Údbr   rA   rB   rc   r#   r   rQ   rR   rS   r-   z
+str | Noner)   r*   r,   rT   rU   r6   zlist[SemanticSearchResult]r
+   )r8   s   "r   r9   r:   Ë   s…   € ÷ pñ pàðpð &ðpð
+ ðpð &ð
+pð 1ðpð %ðpð ðpð ðpð %ðpð %ðpð 
+$ñpr   c               	ó`	  € V P                  V4      pV P                  VVV
+4       Vf
+   V P                  p\        V\        4      '       g   \        V\
+        4      '       g   \
+        R4      h^Tu;8:  d   V P                  8:  g   M \
+        RV P                   R24      hVe8   \        V\        4      '       d   VP                  4       '       g   \
+        R4      hVe8   \        V\        4      '       d   VP                  4       '       g   \
+        R4      hVe8   \        V\        4      '       d   VP                  4       '       g   \
+        R4      hV	e8   \        V	\        4      '       d   V	P                  4       '       g   \
+        R4      h\        P                  P                  V4      P                  R4      p\        \        \        V4      P!                  \        \#        \        P$                  \        P$                  8H  \        P&                  \        P&                  8H  4      4      P)                  \        P*                  R	8H  \        P                  P-                  R 4      \        P.                  V P0                  8H  4      p
+Ve#   V
+P)                  \        P2                  V8H  4      p
+Ve/   V
+P)                  \        P2                  P5                  V4      4      p
+Ve#   V
+P)                  \        P6                  V8H  4      p
+Ve#   V
+P)                  \        P8                  V8H  4      p
+Ve#   V
+P)                  \        P:                  V8H  4      p
+V	e#   V
+P)                  \        P<                  V	8H  4      p
+V
+e   V
+P)                  VR
+V
+,
+          8*  4      p
+V
+P?                  VPA                  4       4      PC                  V4      p
+VPE                  V
+4      PG                  4       p. pV FÅ  w  ppp\I        V4      pR
+V,
+          pTPK                  \M        VP$                  VP2                  VPN                  VPP                  VPR                  ;'       g    . VPT                  VPV                  VVVP8                  VP:                  VP.                  VP<                  VP6                  R7      4       KÇ  	  V# )Nz Search limit must be an integer.z#Search limit must be between 1 and rD   z!Chunking version cannot be empty.zProvider cannot be empty.zModel cannot be empty.z!Pipeline version cannot be empty.r(   Úreadyr^   )r   r   r    r!   r"   r$   r%   r'   r(   r)   r*   r+   r,   r-   ),rN   ra   r4   rE   rH   r   r   r5   r   Ústripr	   Ú	embeddingÚcosine_distanceÚlabelr   r
+   Újoinr   r   Úcontent_hashÚwhereÚstatusÚis_notr+   r3   r   Úin_r-   r)   r*   r,   Úorder_byÚascrc   ÚexecuteÚallr&   rK   r   r    r!   r"   r$   r%   )r=   re   rA   rc   r   rR   r-   r)   r*   r,   rT   rL   Údistance_expressionÚ	statementÚrowsÚresultsÚchunkri   r(   r'   s   &&&$$$$$$$$         r   ÚsearchÚSemanticSearchService.searchË   s  € ð  ×&Ñ& |Ó4ˆð 	
+×ÑØØØô	
+ð Š=Ø×&Ñ&ˆEäeœT×"Ò"¬*°U¼C×*@Ò*@Ü/Ø2óð 
+ð EÖ+˜TŸ^™^Ö+Ü/Ø5°d·n±nÐ5EÀQÐGóð 
+ð
+ Ò'ÜÐ+¬S×1Ò1Ø#×)Ñ)×+Ò+ä/Ø3óð 
+ð ÒÜ˜8¤S×)Ò)°·±×1AÒ1Aä/Ø+óð 
+ð ÒÜ˜5¤#×&Ò&¨e¯k©k¯mªmä/Ø(óð 
+ð Ò'ÜÐ+¬S×1Ò1Ø#×)Ñ)×+Ò+ä/Ø3óð 
+ô 
+×$Ñ$ß
+‰_˜VÓ
+$ß
+‰U:Ó
+ð 	ô 
+ÜÜØ#ó
+÷
+ ‰TÜÜÜ"×+Ñ+¬}×/EÑ/EÑEÜ"×/Ñ/Ü$×1Ñ1ñ2óó÷ ‰UÜ×%Ñ%¨Ñ0Ü×(Ñ(×/Ñ/°Ó5Ü×)Ñ)¨T×-CÑ-CÑCóð 	ð, Ò"Ø!Ÿ™Ü×)Ñ)¨[Ñ8óˆIð
+ Ò#Ø!Ÿ™Ü×)Ñ)×-Ñ-¨lÓ;óˆIð
+ Ò'Ø!Ÿ™Ü×.Ñ.Ð2BÑBóˆIð
+ ÒØ!Ÿ™Ü×'Ñ'¨8Ñ3óˆIð
+ ÒØ!Ÿ™Ü×$Ñ$¨Ñ-óˆIð
+ Ò'Ø!Ÿ™Ü×/Ñ/Ð3CÑCóˆIð
+ Ò%Ø!Ÿ™Ø# s¨^Õ';Ñ;óˆIð 
+ß
+‰XÐ)×-Ñ-Ó/Ó
+0ß
+‰U5‹\ð 	ð z‰z˜)Ó$×(Ñ(Ó*ˆà.0ˆã*.Ñ&ˆE9˜hä˜X“ˆHØ˜xˆJàN‰NÜ$Ø"Ÿ^™^Ø %× 1Ñ 1Ø %× 1Ñ 1ØŸ™Ø!&×!3Ñ!3×!9Ð!9°rØ$×/Ñ/Ø"Ÿ^™^Ø)Ø%Ø&×/Ñ/Ø#Ÿ/™/Ø(×3Ñ3Ø%.×%?Ñ%?Ø%*×%;Ñ%;ôö
+ñ +/ð0 ˆr   )r4   r5   r3   )
+r   r   r   r   r   r<   ÚDEFAULT_SEARCH_LIMITÚMAX_SEARCH_LIMITr>   rN   ra   r{   r   r
+   r   r   r0   r0   3   sˆ   † ñ
+ð" "<Ø1Ø)÷	#õ6'õRBðHpð
+ !ðpð )-ð
+pð 48ðpð (,ðpð  $ðpð !ðpð (,ðpð (,÷pó pr   r0   )Ú
+__future__r   rI   rX   Úcollections.abcr   Údataclassesr   Ú
+sqlalchemyr   r   Úsqlalchemy.ormr   Úapp.models.chunk_embeddingr	   Úapp.models.document_chunkr
+   r<   r}   r~   Ú	Exceptionr   r   r   r0   r
+   r   r   Ú<module>r‡      sw   ðÝ "ã Û å $Ý !ç #Ý "å 5Ý 3ð "Ð àÐ ØÐ ô9˜)ô 9ô;Ð$7ô ;ñ $Ô÷ð ó ð÷(Hó Hr   
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\__pycache__\_init_.cpython-314.pyc ==========
++
+    »ëjö   ã                   ó&   € ^ RI Ht ^ RIHt RR.tR# )é    )ÚEmbeddingService)ÚGeminiEmbeddingProviderr   r   N)Ú)app.services.embeddings.embedding_servicer   Ú'app.services.embeddings.gemini_providerr   Ú__all__© ó    Ú!app\services\embeddings\_init_.pyÚ<module>r      s   ðõõð
+ Øð‚r	   
+========== C:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\__pycache__\__init__.cpython-314.pyc ==========
++
+    ìj  ã                   ó‚   € ^ RI Ht ^ RIHt RR.t^ RIHtHtHt ^ RI Ht ^ RIHt . R	Ot^ RI	H
+t
+Ht ^ RIH
+t
+HtHtHt R# )
+é    )ÚEmbeddingService)ÚGeminiEmbeddingProviderr   r   )ÚEmbeddingPipelineÚEmbeddingPipelineResultÚChunkEmbeddingOutcome)ÚEmbeddingPersistenceServiceÚEmbeddingPersistenceResult)ÚSemanticSearchServiceÚSemanticSearchResultÚSemanticSearchErrorÚSemanticSearchValidationErrorN)r   r   r   r   r   )Ú)app.services.embeddings.embedding_servicer   Ú'app.services.embeddings.gemini_providerr   Ú__all__Ú*app.services.embeddings.embedding_pipeliner   r   r   Ú-app.services.embeddings.embedding_persistencer   r	   Ú'app.services.embeddings.semantic_searchr
+   r   r   r
+   © ó    ÚNC:\Users\Sayali\OneDrive\Desktop\ScholarAi\app\services\embeddings\__init__.pyÚ<module>r      sH   ðõõð
+ Øð€÷ñ õõò€÷÷õ r   

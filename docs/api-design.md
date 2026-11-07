@@ -238,3 +238,34 @@ Authentication is required.
 - Client-supplied document IDs are never trusted.
 - Inaccessible documents return HTTP 404.
 - Users cannot retrieve chunks belonging to another user.
+## Content-Based Recommendations
+
+### Generate Content-Based Recommendations
+
+**Endpoint**
+
+POST `/api/v1/recommendations/content-based`
+
+**Purpose**
+
+Generates educational resource recommendations using semantic
+similarity, content features, content-based scoring, filtering,
+and deterministic ranking.
+
+### Request
+
+```json
+{
+  "query": "Learn Python programming",
+  "subject": "Computer Science",
+  "language": "english",
+  "difficulty_level": "beginner",
+  "resource_types": [
+    "video",
+    "tutorial",
+    "notes"
+  ],
+  "limit": 10,
+  "minimum_similarity": 0.3,
+  "exclude_completed": true
+}

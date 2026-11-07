@@ -12,7 +12,7 @@ from app.models.recommendation import Recommendation
 from app.models.recommendation_feedback import RecommendationFeedback
 from app.models.document_chunk import DocumentChunk
 from app.models.chunk_embedding import ChunkEmbedding
-
+from app.models.resource_embedding import ResourceEmbedding
 __all__ = [
     "User",
     "Conversation",

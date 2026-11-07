@@ -12,7 +12,9 @@ from app.api.rag import router as rag_router
 from app.core.config import settings
 
 from app.database.session import engine
-
+from app.api.content_recommendations import (
+    router as content_recommendations_router,
+)
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -122,4 +124,7 @@ app.include_router(
     recommendations_router,
     prefix="/api/v1/recommendations",
     tags=["Recommendations"],
+)
+app.include_router(
+    content_recommendations_router,
 )

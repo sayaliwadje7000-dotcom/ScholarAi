@@ -21,7 +21,9 @@ app = FastAPI(
     description="An AI-powered academic learning platform",
     version=settings.APP_VERSION,
 )
-
+from app.api.resource_recommendations import (
+    router as resource_recommendations_router,
+)
 
 # ============================================================
 # CORS CONFIGURATION
@@ -127,4 +129,8 @@ app.include_router(
 )
 app.include_router(
     content_recommendations_router,
+)
+app.include_router(
+    resource_recommendations_router,
+    prefix="/api/v1",
 )

@@ -38,6 +38,7 @@ MODEL_TABLES = {
     "recommendation_feedback",
     "document_chunks",
     "chunk_embeddings",
+    "opportunities",
 }
 
 

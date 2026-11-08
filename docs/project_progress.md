@@ -485,3 +485,34 @@ After that, begin:
 **Phase 8 — Embeddings and Vector Search.**
 
 The overall objective remains completion of all 22 ScholarAI roadmap phases.
+## Phase 14 — Machine Learning Recommendation Model
+
+Current subphase: 14.11 — Documentation and Final Verification
+
+| Subphase | Description | Status |
+|---|---|---|
+| 14.1 | Recommendation objective and data audit | Implemented; verification evidence to retain |
+| 14.2 | Dataset architecture and label definition | Implemented; verification evidence to retain |
+| 14.3 | Feature engineering and feature pipeline | Implemented; tests previously reported passing |
+| 14.4 | Baseline machine-learning model | Implemented; final verification pending |
+| 14.5 | Model training pipeline | Implemented; final verification pending |
+| 14.6 | Model evaluation and validation | Implemented; final verification pending |
+| 14.7 | Experiment tracking and reproducibility | Implemented; final verification pending |
+| 14.8 | Privacy and data protection | Implemented; final verification pending |
+| 14.9 | ML recommendation service | Implemented; integration verification pending |
+| 14.10 | API integration and testing | Committed and pushed as 7688d3b; final verification pending |
+| 14.11 | Documentation and phase verification | In progress |
+
+### Final completion requirements
+
+- Full Phase 14 test suite passes.
+- Complete project regression suite passes.
+- ML feature extraction and inference contracts match.
+- Model and transformer compatibility is verified.
+- Experiment tracking and privacy integration is verified.
+- API route and OpenAPI schema are verified.
+- Model evaluation results are documented.
+- Known limitations are recorded.
+
+Phase 14 must not be marked complete until these
+requirements have been verified.

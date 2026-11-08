@@ -75,6 +75,14 @@ from app.services.recommendations.content_based.recommendation_service import (
     ContentBasedRecommendationService,
     ContentRecommendationServiceError,
 )
+from app.services.recommendations.ml.models import (
+    BaselineModelConfig,
+    RecommendationBaselineModel,
+    RecommendationDummyBaseline,
+    BaselineModelError,
+    BaselineModelNotFittedError,
+    InvalidTrainingDataError,
+)
 __all__ = [
     "ContentFeatureExtractor",
     "ExtractedContentFeatures",
@@ -90,4 +98,10 @@ __all__ = [
 "ResourceEmbeddingNotFoundError",
  "ContentBasedRecommendationService",
     "ContentRecommendationServiceError",
+    "BaselineModelConfig",
+"RecommendationBaselineModel",
+"RecommendationDummyBaseline",
+"BaselineModelError",
+"BaselineModelNotFittedError",
+"InvalidTrainingDataError",
 ]

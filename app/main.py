@@ -30,6 +30,9 @@ from app.integrations.opportunities.registry import (
 from app.api.opportunities import (
     router as opportunities_router,
 )
+from app.api.ml_recommendations import (
+    router as ml_recommendations_router,
+)
 
 # ============================================================
 # APPLICATION LIFECYCLE
@@ -179,4 +182,8 @@ app.include_router(
     opportunities_router,
     prefix="/api/v1/opportunities",
     tags=["Opportunities"],
+)
+app.include_router(
+    ml_recommendations_router,
+    prefix="/api/v1/recommendations",
 )

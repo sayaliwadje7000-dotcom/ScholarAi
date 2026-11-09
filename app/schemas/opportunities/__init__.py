@@ -22,6 +22,15 @@ from app.schemas.opportunities.opportunity import (
     OpportunityType,
     OpportunityVerificationStatus,
 )
+from app.schemas.hybrid_recommendations import (
+    HybridRecommendationRequest,
+    HybridRecommendationResponse,
+    HybridRecommendationItemResponse,
+    HybridRecommendationExplanationResponse,
+    HybridComponentStatusResponse,
+    HybridComponentScoreResponse,
+    HybridRecommendationErrorResponse,
+)
 
 
 

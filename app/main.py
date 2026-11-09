@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-
+from app.api.hybrid_recommendations import router as hybrid_recommendations_router
 from app.api.chat import router as chat_router
 from app.api.documents import router as documents_router
 from app.api.retrieval import router as retrieval_router
@@ -32,6 +32,15 @@ from app.api.opportunities import (
 )
 from app.api.ml_recommendations import (
     router as ml_recommendations_router,
+)
+from app.api.learning_profile import (
+    router as learning_profile_router,
+)
+from app.api.learning_activities import (
+    router as learning_activities_router,
+)
+from app.api.personalization_controls import (
+    router as personalization_controls_router,
 )
 
 # ============================================================
@@ -186,4 +195,23 @@ app.include_router(
 app.include_router(
     ml_recommendations_router,
     prefix="/api/v1/recommendations",
+)
+app.include_router(
+    hybrid_recommendations_router,
+    prefix="/api/v1",
+)
+app.include_router(
+    learning_profile_router,
+    prefix="/api/v1/learning-profile",
+    tags=["Learning Profile"],
+)
+app.include_router(
+    learning_activities_router,
+    prefix="/api/v1/learning-activities",
+    tags=["Learning Activities"],
+)
+app.include_router(
+    personalization_controls_router,
+    prefix="/api/v1/personalization-controls",
+    tags=["Personalization Controls"],
 )

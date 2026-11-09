@@ -1,3 +1,7 @@
+"""
+ScholarAI RAG API.
+"""
+
 import logging
 
 from fastapi import (
@@ -20,6 +24,10 @@ from app.schemas.retrieval import RetrievalRequest
 from app.schemas.rag import RAGAskResponse
 
 from app.services.rag.rag_service import RAGService
+
+from app.services.llm_providers.exceptions import (
+    LLMProviderError,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -45,11 +53,10 @@ async def ask_rag(
     rag_service: RAGService = Depends(get_rag_service),
 ) -> RAGAskResponse:
     """
-    Execute the complete RAG pipeline for an authenticated user.
+    Execute the integrated RAG pipeline for an authenticated user.
     """
 
     try:
-
         result = await rag_service.ask(
             db=db,
             user_id=current_user.id,
@@ -60,6 +67,20 @@ async def ask_rag(
 
     except HTTPException:
         raise
+
+    except LLMProviderError as exc:
+
+        logger.exception(
+            "LLM provider failure during RAG generation."
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "The document question-answering service "
+                "is temporarily unavailable."
+            ),
+        ) from exc
 
     except RuntimeError as exc:
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 
 from dataclasses import dataclass, field
@@ -12,13 +13,36 @@ from app.schemas.retrieval import (
     RetrievedChunkResponse,
 )
 
-from app.services.retrieval_service import RetrievalService
+from app.schemas.query_classification import (
+    AcademicTaskType,
+)
 
-from app.services.llm_service import generate_llm_response
+from app.schemas.response_intelligence import (
+    ResponseFormat,
+    ResponseIntelligenceRequest,
+)
+
+from app.services.retrieval_service import RetrievalService
 
 from app.services.safety_service import (
     evaluate_message,
     validate_output,
+)
+
+from app.services.query_classification_service import (
+    query_classification_service,
+)
+
+from app.services.query_rewriting_service import (
+    query_rewriting_service,
+)
+
+from app.services.llm_providers.generation import (
+    generate_with_provider_router,
+)
+
+from app.services.response_intelligence.response_intelligence_service import (
+    response_intelligence_service,
 )
 
 from app.services.rag.context_builder import ContextBuilder
@@ -37,10 +61,18 @@ from app.services.rag.grounding_service import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
+# ==========================================================
+# RAG RESULT
+# ==========================================================
+
 @dataclass(frozen=True)
 class RAGResult:
 
     query: str
+
     answer: str
 
     retrieved_chunks: list[RetrievedChunkResponse]
@@ -50,22 +82,30 @@ class RAGResult:
     grounded: bool
 
     included_chunks: int = 0
+
     excluded_chunks: int = 0
+
     context_characters: int = 0
 
     citations: list[Citation] = field(default_factory=list)
+
     citation_issues: list[CitationIssue] = field(default_factory=list)
 
     grounding_status: str = "not_verified"
+
     grounding_report: GroundingReport | None = None
 
+
+# ==========================================================
+# RAG SERVICE
+# ==========================================================
 
 class RAGService:
 
     def __init__(
         self,
         retrieval_service: RetrievalService,
-        llm_generator: Callable = generate_llm_response,
+        llm_generator: Callable | None = None,
         context_builder: ContextBuilder | None = None,
         prompt_builder: RAGPromptBuilder | None = None,
         citation_service: CitationService | None = None,
@@ -73,7 +113,10 @@ class RAGService:
     ):
 
         self.retrieval_service = retrieval_service
-        self.llm_generator = llm_generator
+
+        self.llm_generator = (
+            llm_generator or generate_with_provider_router
+        )
 
         self.context_builder = (
             context_builder or ContextBuilder()
@@ -88,11 +131,16 @@ class RAGService:
         )
 
         self.grounding_service = (
-            grounding_service or GroundingService(
+            grounding_service
+            or GroundingService(
                 minimum_coverage=0.80,
                 require_citations=True,
             )
         )
+
+    # ======================================================
+    # RETRIEVED CHUNK CONVERSION
+    # ======================================================
 
     @staticmethod
     def _convert_retrieved_chunk(
@@ -116,6 +164,35 @@ class RAGService:
             chunking_version=chunk.chunking_version,
         )
 
+    # ======================================================
+    # RESPONSE FORMAT SELECTION
+    # ======================================================
+
+    @staticmethod
+    def _select_response_format(
+        task_type: AcademicTaskType,
+    ) -> ResponseFormat:
+
+        format_mapping = {
+            AcademicTaskType.COMPARISON:
+                ResponseFormat.COMPARISON,
+
+            AcademicTaskType.PROBLEM_SOLVING:
+                ResponseFormat.STEP_BY_STEP,
+
+            AcademicTaskType.SUMMARIZATION:
+                ResponseFormat.SUMMARY,
+        }
+
+        return format_mapping.get(
+            task_type,
+            ResponseFormat.PLAIN_TEXT,
+        )
+
+    # ======================================================
+    # MAIN RAG WORKFLOW
+    # ======================================================
+
     async def ask(
         self,
         db: Session,
@@ -123,14 +200,18 @@ class RAGService:
         request: RetrievalRequest,
     ) -> RAGResult:
 
-        # STEP 1: INPUT SAFETY SCREENING
+        original_query = request.query
 
-        safety_result = evaluate_message(request.query)
+        # --------------------------------------------------
+        # STEP 1: INPUT SAFETY
+        # --------------------------------------------------
+
+        safety_result = evaluate_message(original_query)
 
         if not safety_result.allowed:
 
             return RAGResult(
-                query=request.query,
+                query=original_query,
                 answer=(
                     safety_result.response
                     or "This request cannot be processed."
@@ -141,12 +222,64 @@ class RAGService:
                 grounding_status="not_verified",
             )
 
-        # STEP 2: DOCUMENT RETRIEVAL
+        # --------------------------------------------------
+        # STEP 2: QUERY CLASSIFICATION
+        # --------------------------------------------------
+
+        classification = query_classification_service.classify(
+            query=original_query,
+            has_conversation_context=False,
+            has_document_context=True,
+        )
+
+        logger.info(
+            "RAG query classified",
+            extra={
+                "intent": classification.intent.value,
+                "task_type": classification.task_type.value,
+                "confidence": classification.confidence,
+                "classifier_version": (
+                    classification.classifier_version
+                ),
+            },
+        )
+
+        # --------------------------------------------------
+        # STEP 3: QUERY REWRITING
+        # --------------------------------------------------
+
+        rewrite_result = query_rewriting_service.rewrite(
+            query=original_query,
+            classification=classification,
+        )
+
+        logger.info(
+            "RAG query rewritten",
+            extra={
+                "strategy": rewrite_result.strategy.value,
+                "rewritten": rewrite_result.rewritten,
+                "classifier_version": (
+                    rewrite_result.classifier_version
+                ),
+            },
+        )
+
+        # Use retrieval-specific enrichment only for retrieval.
+        # Keep original_query for the final answer prompt.
+        retrieval_request = request.model_copy(
+            update={
+                "query": rewrite_result.retrieval_query,
+            }
+        )
+
+        # --------------------------------------------------
+        # STEP 4: DOCUMENT RETRIEVAL
+        # --------------------------------------------------
 
         retrieved_results = await self.retrieval_service.search(
             db=db,
             user_id=user_id,
-            request=request,
+            request=retrieval_request,
         )
 
         retrieved_chunks = [
@@ -154,12 +287,14 @@ class RAGService:
             for chunk in retrieved_results
         ]
 
-        # STEP 3: HANDLE EMPTY RETRIEVAL
+        # --------------------------------------------------
+        # STEP 5: HANDLE EMPTY RETRIEVAL
+        # --------------------------------------------------
 
         if not retrieved_chunks:
 
             return RAGResult(
-                query=request.query,
+                query=original_query,
                 answer=(
                     "I could not find relevant information in the "
                     "selected documents. Please rephrase your question "
@@ -171,7 +306,9 @@ class RAGService:
                 grounding_status="insufficient_evidence",
             )
 
-        # STEP 4: BUILD CONTEXT
+        # --------------------------------------------------
+        # STEP 6: BUILD CONTEXT
+        # --------------------------------------------------
 
         context_result = self.context_builder.build(
             retrieved_chunks
@@ -180,7 +317,7 @@ class RAGService:
         if not context_result.context:
 
             return RAGResult(
-                query=request.query,
+                query=original_query,
                 answer=(
                     "The retrieved document content could not fit "
                     "within the available context budget."
@@ -194,28 +331,42 @@ class RAGService:
                 grounding_status="insufficient_evidence",
             )
 
-        # STEP 5: BUILD RAG PROMPT
+        # --------------------------------------------------
+        # STEP 7: BUILD RAG PROMPT
+        # --------------------------------------------------
 
         prompt_result = self.prompt_builder.build(
-            query=request.query,
+            query=original_query,
             context=context_result.context,
             sources=context_result.sources,
         )
 
-        # STEP 6: GENERATE ANSWER
+        # --------------------------------------------------
+        # STEP 8: GENERATE THROUGH PROVIDER ROUTER
+        # --------------------------------------------------
 
         answer = await self.llm_generator(
             prompt_result.prompt
         )
 
-        # STEP 7: OUTPUT SAFETY VALIDATION
+        if not isinstance(answer, str) or not answer.strip():
+
+            raise RuntimeError(
+                "The LLM provider returned an invalid RAG response."
+            )
+
+        answer = answer.strip()
+
+        # --------------------------------------------------
+        # STEP 9: OUTPUT SAFETY
+        # --------------------------------------------------
 
         output_safety = validate_output(answer)
 
         if not output_safety.allowed:
 
             return RAGResult(
-                query=request.query,
+                query=original_query,
                 answer=(
                     output_safety.response
                     or "The generated response could not be displayed."
@@ -229,14 +380,53 @@ class RAGService:
                 grounding_status="not_verified",
             )
 
-        # STEP 8: CITATION EXTRACTION AND VALIDATION
+        # --------------------------------------------------
+        # STEP 10: RESPONSE INTELLIGENCE
+        # --------------------------------------------------
+
+        response_format = self._select_response_format(
+            classification.task_type
+        )
+
+        intelligence_result = (
+            response_intelligence_service.process(
+                ResponseIntelligenceRequest(
+                    response=answer,
+                    response_format=response_format,
+                    validate_safety=False,
+                )
+            )
+        )
+
+        answer = intelligence_result.response
+
+        logger.info(
+            "RAG response intelligence completed",
+            extra={
+                "response_format": (
+                    intelligence_result.response_format.value
+                ),
+                "validation_status": (
+                    intelligence_result.validation_status.value
+                ),
+                "quality_issue_count": len(
+                    intelligence_result.quality_issues
+                ),
+            },
+        )
+
+        # --------------------------------------------------
+        # STEP 11: CITATION EXTRACTION
+        # --------------------------------------------------
 
         citation_result = self.citation_service.extract(
             answer=answer,
             sources=context_result.sources,
         )
 
-        # STEP 9: GROUNDING AND CITATION COVERAGE VERIFICATION
+        # --------------------------------------------------
+        # STEP 12: GROUNDING VERIFICATION
+        # --------------------------------------------------
 
         grounding_report = self.grounding_service.verify(
             answer=answer,
@@ -244,27 +434,23 @@ class RAGService:
             citation_result=citation_result,
         )
 
-        # STEP 10: RETURN STRUCTURED RAG RESULT
+        # --------------------------------------------------
+        # STEP 13: RETURN STRUCTURED RESULT
+        # --------------------------------------------------
 
         return RAGResult(
-            query=request.query,
+            query=original_query,
             answer=answer,
             retrieved_chunks=retrieved_chunks,
             total_retrieved=len(retrieved_chunks),
-
-            # This indicates citation checks passed.
-            # It does not prove semantic faithfulness.
             grounded=(
                 grounding_report.status == "citation_checks_passed"
             ),
-
             included_chunks=context_result.included_chunks,
             excluded_chunks=context_result.excluded_chunks,
             context_characters=context_result.total_characters,
-
             citations=citation_result.citations,
             citation_issues=citation_result.issues,
-
             grounding_status=grounding_report.status,
             grounding_report=grounding_report,
         )

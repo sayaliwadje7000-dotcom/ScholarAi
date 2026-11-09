@@ -5,12 +5,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-from app.api.hybrid_recommendations import router as hybrid_recommendations_router
+
+from app.api.hybrid_recommendations import (
+    router as hybrid_recommendations_router,
+)
+
 from app.api.chat import router as chat_router
 from app.api.documents import router as documents_router
 from app.api.retrieval import router as retrieval_router
 from app.api.rag import router as rag_router
-from app.api.recommendations import router as recommendations_router
+from app.api.recommendations import (
+    router as recommendations_router,
+)
 
 from app.api.content_recommendations import (
     router as content_recommendations_router,
@@ -27,21 +33,31 @@ from app.database.session import engine
 from app.integrations.opportunities.registry import (
     OpportunityProviderRegistry,
 )
+
 from app.api.opportunities import (
     router as opportunities_router,
 )
+
 from app.api.ml_recommendations import (
     router as ml_recommendations_router,
 )
+
 from app.api.learning_profile import (
     router as learning_profile_router,
 )
+
 from app.api.learning_activities import (
     router as learning_activities_router,
 )
+
 from app.api.personalization_controls import (
     router as personalization_controls_router,
 )
+
+from app.services.llm_providers.provider_setup import (
+    register_default_llm_providers,
+)
+
 
 # ============================================================
 # APPLICATION LIFECYCLE
@@ -50,7 +66,10 @@ from app.api.personalization_controls import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Manages application startup and shutdown resources.
+    Manage application startup and shutdown resources.
+
+    Initializes the LLM provider registry and the
+    educational opportunity provider registry.
     """
 
     opportunity_registry = OpportunityProviderRegistry()
@@ -58,6 +77,10 @@ async def lifespan(app: FastAPI):
     app.state.opportunity_provider_registry = (
         opportunity_registry
     )
+
+    # Register configured default LLM providers.
+    # Registration is idempotent in provider_setup.py.
+    register_default_llm_providers()
 
     try:
         yield
@@ -124,11 +147,10 @@ def health_check():
 @app.get("/health/database")
 def database_health_check():
     """
-    Checks whether PostgreSQL is reachable.
+    Check whether PostgreSQL is reachable.
     """
 
     try:
-
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
 
@@ -138,7 +160,6 @@ def database_health_check():
         }
 
     except SQLAlchemyError:
-
         return {
             "status": "unhealthy",
             "database": "disconnected",
@@ -187,29 +208,35 @@ app.include_router(
     resource_recommendations_router,
     prefix="/api/v1",
 )
+
 app.include_router(
     opportunities_router,
     prefix="/api/v1/opportunities",
     tags=["Opportunities"],
 )
+
 app.include_router(
     ml_recommendations_router,
     prefix="/api/v1/recommendations",
 )
+
 app.include_router(
     hybrid_recommendations_router,
     prefix="/api/v1",
 )
+
 app.include_router(
     learning_profile_router,
     prefix="/api/v1/learning-profile",
     tags=["Learning Profile"],
 )
+
 app.include_router(
     learning_activities_router,
     prefix="/api/v1/learning-activities",
     tags=["Learning Activities"],
 )
+
 app.include_router(
     personalization_controls_router,
     prefix="/api/v1/personalization-controls",

@@ -2,14 +2,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from app.api.auth import router as auth_router
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-
+from app.api.sessions import router as sessions_router
 from app.api.hybrid_recommendations import (
     router as hybrid_recommendations_router,
 )
-from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.api.documents import router as documents_router
 from app.api.retrieval import router as retrieval_router
@@ -27,6 +27,8 @@ from app.api.resource_recommendations import (
 )
 
 from app.core.config import settings
+from app.core.security_config import security_settings
+from app.security.security_middleware import SecurityMiddleware
 
 from app.database.session import engine
 
@@ -105,6 +107,16 @@ app = FastAPI(
 
 
 # ============================================================
+# APPLICATION SECURITY MIDDLEWARE
+# ============================================================
+
+app.add_middleware(
+    SecurityMiddleware,
+    settings=security_settings,
+)
+
+
+# ============================================================
 # CORS CONFIGURATION
 # ============================================================
 
@@ -118,7 +130,11 @@ app.add_middleware(
     allow_methods=[
         "GET",
         "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
         "OPTIONS",
+        "HEAD",
     ],
     allow_headers=[
         "Content-Type",
@@ -263,15 +279,15 @@ app.include_router(
     prefix="/api/v1/auth",
     tags=["Authentication"],
 )
-app.include_router(
-    auth_router,
-    prefix="/api/v1/auth",
-    tags=["Authentication"],
-)
 from app.api.role_management import router as role_management_router
 
 app.include_router(
     role_management_router,
     prefix="/api/v1/admin",
     tags=["Role Management"],
+)
+app.include_router(
+    sessions_router,
+    prefix="/api/v1/sessions",
+    tags=["Sessions"],
 )

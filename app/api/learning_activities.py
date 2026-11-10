@@ -21,6 +21,7 @@ from app.schemas.behavioral_signals import (
 
 from app.services.behavioral_signal_service import (
     BehavioralSignalService,
+    LearningActivityEntityNotFoundError,
 )
 
 
@@ -58,6 +59,15 @@ def record_learning_activity(
         db.refresh(activity)
 
         return activity
+
+    except LearningActivityEntityNotFoundError as exc:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Referenced resource not found.",
+        ) from exc
 
     except Exception as exc:
 

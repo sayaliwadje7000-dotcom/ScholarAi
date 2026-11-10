@@ -9,6 +9,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.hybrid_recommendations import router
+from app.api.dependencies import get_current_user
+from types import SimpleNamespace
 from app.api.hybrid_recommendation_dependencies import (
     get_hybrid_recommendation_orchestrator,
 )
@@ -35,11 +37,9 @@ def app(user_id):
     application.dependency_overrides[
         get_hybrid_recommendation_orchestrator
     ] = lambda: application.state.hybrid_recommendation_orchestrator
-
-    @application.middleware("http")
-    async def inject_user_context(request, call_next):
-        request.state.user_id = user_id
-        return await call_next(request)
+    application.dependency_overrides[get_current_user] = (
+        lambda: SimpleNamespace(id=user_id, is_active=True)
+    )
 
     yield application
 

@@ -5,6 +5,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.learning_activity import LearningActivity
+from app.models.document import Document
+from app.models.recommendation import Recommendation
 
 from app.models.user_resource_interaction import (
     UserResourceInteraction,
@@ -16,6 +18,10 @@ from app.schemas.behavioral_signals import (
     LearningActivityType,
     BehavioralSignalCollection,
 )
+
+
+class LearningActivityEntityNotFoundError(Exception):
+    """Raised when an activity references a private entity the user cannot access."""
 
 
 class BehavioralSignalService:
@@ -388,6 +394,34 @@ class BehavioralSignalService:
         user_id: UUID,
         request,
     ) -> LearningActivity:
+        """Record activity only after validating private entity ownership."""
+
+        entity_type = (request.entity_type or "").strip().lower()
+        entity_id = request.entity_id
+
+        if entity_type == "document" and entity_id is not None:
+            owned_entity = db.scalar(
+                select(Document.id).where(
+                    Document.id == entity_id,
+                    Document.user_id == user_id,
+                )
+            )
+            if owned_entity is None:
+                raise LearningActivityEntityNotFoundError(
+                    "Referenced document was not found."
+                )
+
+        elif entity_type == "recommendation" and entity_id is not None:
+            owned_entity = db.scalar(
+                select(Recommendation.id).where(
+                    Recommendation.id == entity_id,
+                    Recommendation.user_id == user_id,
+                )
+            )
+            if owned_entity is None:
+                raise LearningActivityEntityNotFoundError(
+                    "Referenced recommendation was not found."
+                )
 
         activity = LearningActivity(
             user_id=user_id,

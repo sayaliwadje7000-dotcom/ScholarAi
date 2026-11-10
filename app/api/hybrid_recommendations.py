@@ -7,9 +7,11 @@ from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
-    Request,
     status,
 )
+
+from app.api.dependencies import get_current_user
+from app.models.user import User
 
 from app.api.hybrid_recommendation_dependencies import (
     HybridRecommendationDependencyError,
@@ -124,7 +126,7 @@ def _build_component_reports(result):
 )
 def generate_hybrid_recommendations(
     payload: HybridRecommendationRequest,
-    request: Request,
+    current_user: User = Depends(get_current_user),
     orchestrator: HybridRecommendationOrchestrator = Depends(
         get_hybrid_recommendation_orchestrator
     ),
@@ -136,38 +138,8 @@ def generate_hybrid_recommendations(
     request_id = None
 
     try:
-        # The current authentication phase is later in the roadmap.
-        # Until authentication is implemented, the user identifier
-        # must be supplied by a trusted integration layer.
-        user_id_value = getattr(
-            request.state,
-            "user_id",
-            None,
-        )
-
-        if user_id_value is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authenticated user context is required.",
-            )
-
-        if isinstance(user_id_value, str):
-            try:
-                user_id_value = UUID(user_id_value)
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid authenticated user context.",
-                ) from exc
-
-        if not isinstance(user_id_value, UUID):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authenticated user context.",
-            )
-
         context = HybridRequestContext(
-            user_id=user_id_value,
+            user_id=current_user.id,
             query=payload.query,
             filters=payload.filters,
             metadata=payload.metadata,
@@ -180,6 +152,17 @@ def generate_hybrid_recommendations(
 
         request_id = result.request_id
 
+        # The orchestration result must retain the authenticated
+        # identity supplied in HybridRequestContext. Never trust a
+        # user identifier returned by an orchestration component.
+        if result.user_id != current_user.id:
+            logger.error(
+                "Hybrid orchestrator returned a mismatched user ID."
+            )
+            raise RuntimeError(
+                "Hybrid recommendation ownership context mismatch."
+            )
+
         recommendation_items = _build_recommendation_items(
             result
         )
@@ -190,7 +173,7 @@ def generate_hybrid_recommendations(
 
         return HybridRecommendationResponse(
             request_id=result.request_id,
-            user_id=result.user_id,
+            user_id=current_user.id,
             generated_at=result.generated_at,
             recommendations=recommendation_items,
             component_reports=component_reports,

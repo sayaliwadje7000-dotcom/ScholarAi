@@ -8,6 +8,7 @@ from fastapi import (
 )
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.dependencies import get_current_user
@@ -219,10 +220,12 @@ def submit_recommendation_feedback(
     current_user: User = Depends(get_current_user),
 ):
     recommendation = db.scalar(
-        select(Recommendation).where(
+        select(Recommendation)
+        .where(
             Recommendation.id == recommendation_id,
             Recommendation.user_id == current_user.id,
         )
+        .with_for_update()
     )
 
     if recommendation is None:
@@ -255,6 +258,14 @@ def submit_recommendation_feedback(
     try:
         db.commit()
         db.refresh(feedback)
+
+    except IntegrityError as exc:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Feedback has already been submitted.",
+        ) from exc
 
     except Exception as exc:
         db.rollback()

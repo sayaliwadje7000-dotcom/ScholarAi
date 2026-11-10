@@ -7,6 +7,7 @@ the authenticated user from PostgreSQL.
 
 import logging
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import (
@@ -27,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.database.session import get_db
 
 from app.models.user import User
+from app.models.user_session import UserSession
 
 from app.security.token import decode_access_token
 
@@ -100,9 +102,10 @@ def get_current_user(
             credentials.credentials
         )
 
-        user_id = UUID(
-            claims["sub"]
-        )
+        user_id = UUID(claims["sub"])
+        # Access tokens must be bound to a persistent session. Tokens
+        # minted before session binding are intentionally rejected.
+        session_id = UUID(claims["sid"])
 
     except (
         TokenValidationError,
@@ -138,7 +141,28 @@ def get_current_user(
         ) from exc
 
     if user is None or not user.is_active:
+        raise authentication_error
 
+    try:
+        now = datetime.now(timezone.utc)
+        active_session = db.scalar(
+            select(UserSession).where(
+                UserSession.id == session_id,
+                UserSession.user_id == user_id,
+                UserSession.revoked_at.is_(None),
+                UserSession.expires_at > now,
+            )
+        )
+    except Exception as exc:
+        logger.exception(
+            "Database failure while validating authentication session."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service is temporarily unavailable.",
+        ) from exc
+
+    if active_session is None:
         raise authentication_error
 
     return user

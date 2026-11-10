@@ -1,0 +1,2418 @@
+﻿========== app\services\chat_service.py ==========
+"""
+ScholarAI Chat Service.
+
+Coordinates:
+1. Input validation and safety screening.
+2. Query classification.
+3. LLM response generation.
+4. Output security validation.
+"""
+
+import logging
+
+from app.services.llm_service import generate_llm_response
+
+from app.services.safety_service import (
+    evaluate_message,
+    validate_output,
+)
+
+from app.services.query_classification_service import (
+    query_classification_service,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+async def generate_chat_response(message: str) -> str:
+    """
+    Generate a safe academic response.
+
+    Classification is performed before generation.
+    Actual workflow routing is introduced in later
+    Phase 17 integration subphases.
+    """
+
+    # -----------------------------------------------------
+    # STEP 1: INPUT SAFETY
+    # -----------------------------------------------------
+
+    safety_result = evaluate_message(message)
+
+    if not safety_result.allowed:
+        return safety_result.response
+
+    # -----------------------------------------------------
+    # STEP 2: QUERY CLASSIFICATION
+    # -----------------------------------------------------
+
+    classification = query_classification_service.classify(
+        query=message,
+        has_conversation_context=False,
+        has_document_context=False,
+    )
+
+    logger.info(
+        "ScholarAI query classified",
+        extra={
+            "intent": classification.intent.value,
+            "task_type": classification.task_type.value,
+            "confidence": classification.confidence,
+            "suggested_workflow": classification.suggested_workflow,
+            "ambiguous": classification.ambiguous,
+            "classifier_version": classification.classifier_version,
+        },
+    )
+
+    # -----------------------------------------------------
+    # STEP 3: GENERATE ACADEMIC RESPONSE
+    # -----------------------------------------------------
+
+    answer = await generate_llm_response(message)
+
+    # -----------------------------------------------------
+    # STEP 4: OUTPUT SECURITY
+    # -----------------------------------------------------
+
+    output_result = validate_output(answer)
+
+    if not output_result.allowed:
+        return output_result.response
+
+    return answer
+========== app\api\chat.py ==========
+from fastapi import APIRouter, HTTPException
+
+from app.schemas.chat import ChatRequest, ChatResponse
+from app.services.chat_service import generate_chat_response
+
+
+router = APIRouter()
+
+
+@router.post(
+    "/chat",
+    response_model=ChatResponse,
+    summary="Ask ScholarAI a question",
+    description=(
+        "Accepts a student's academic question and returns an "
+        "AI-generated response using the locally running Ollama model."
+    ),
+)
+async def chat(request: ChatRequest) -> ChatResponse:
+    """Process an academic question using the LLM service."""
+
+    try:
+        answer = await generate_chat_response(request.message)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+        ) from exc
+
+    return ChatResponse(
+        answer=answer,
+        conversation_id=request.conversation_id,
+        status="success",
+    )
+========== app\services\rag\rag_service.py ==========
+from __future__ import annotations
+
+import uuid
+
+from dataclasses import dataclass, field
+from typing import Callable
+
+from sqlalchemy.orm import Session
+
+from app.schemas.retrieval import (
+    RetrievalRequest,
+    RetrievedChunkResponse,
+)
+
+from app.services.retrieval_service import RetrievalService
+
+from app.services.llm_service import generate_llm_response
+
+from app.services.safety_service import (
+    evaluate_message,
+    validate_output,
+)
+
+from app.services.rag.context_builder import ContextBuilder
+
+from app.services.rag.prompt_builder import RAGPromptBuilder
+
+from app.services.rag.citation_service import (
+    Citation,
+    CitationIssue,
+    CitationService,
+)
+
+from app.services.rag.grounding_service import (
+    GroundingService,
+    GroundingReport,
+)
+
+
+@dataclass(frozen=True)
+class RAGResult:
+
+    query: str
+    answer: str
+
+    retrieved_chunks: list[RetrievedChunkResponse]
+
+    total_retrieved: int
+
+    grounded: bool
+
+    included_chunks: int = 0
+    excluded_chunks: int = 0
+    context_characters: int = 0
+
+    citations: list[Citation] = field(default_factory=list)
+    citation_issues: list[CitationIssue] = field(default_factory=list)
+
+    grounding_status: str = "not_verified"
+    grounding_report: GroundingReport | None = None
+
+
+class RAGService:
+
+    def __init__(
+        self,
+        retrieval_service: RetrievalService,
+        llm_generator: Callable = generate_llm_response,
+        context_builder: ContextBuilder | None = None,
+        prompt_builder: RAGPromptBuilder | None = None,
+        citation_service: CitationService | None = None,
+        grounding_service: GroundingService | None = None,
+    ):
+
+        self.retrieval_service = retrieval_service
+        self.llm_generator = llm_generator
+
+        self.context_builder = (
+            context_builder or ContextBuilder()
+        )
+
+        self.prompt_builder = (
+            prompt_builder or RAGPromptBuilder()
+        )
+
+        self.citation_service = (
+            citation_service or CitationService()
+        )
+
+        self.grounding_service = (
+            grounding_service or GroundingService(
+                minimum_coverage=0.80,
+                require_citations=True,
+            )
+        )
+
+    @staticmethod
+    def _convert_retrieved_chunk(
+        chunk,
+    ) -> RetrievedChunkResponse:
+
+        return RetrievedChunkResponse(
+            chunk_id=str(chunk.chunk_id),
+            document_id=chunk.document_id,
+            chunk_index=chunk.chunk_index,
+            text=chunk.text,
+            page_numbers=chunk.page_numbers,
+            start_page=chunk.start_page,
+            end_page=chunk.end_page,
+            similarity=chunk.similarity,
+            distance=chunk.distance,
+            provider=chunk.provider,
+            model=chunk.model,
+            dimensions=chunk.dimensions,
+            pipeline_version=chunk.pipeline_version,
+            chunking_version=chunk.chunking_version,
+        )
+
+    async def ask(
+        self,
+        db: Session,
+        user_id: uuid.UUID,
+        request: RetrievalRequest,
+    ) -> RAGResult:
+
+        # STEP 1: INPUT SAFETY SCREENING
+
+        safety_result = evaluate_message(request.query)
+
+        if not safety_result.allowed:
+
+            return RAGResult(
+                query=request.query,
+                answer=(
+                    safety_result.response
+                    or "This request cannot be processed."
+                ),
+                retrieved_chunks=[],
+                total_retrieved=0,
+                grounded=False,
+                grounding_status="not_verified",
+            )
+
+        # STEP 2: DOCUMENT RETRIEVAL
+
+        retrieved_results = await self.retrieval_service.search(
+            db=db,
+            user_id=user_id,
+            request=request,
+        )
+
+        retrieved_chunks = [
+            self._convert_retrieved_chunk(chunk)
+            for chunk in retrieved_results
+        ]
+
+        # STEP 3: HANDLE EMPTY RETRIEVAL
+
+        if not retrieved_chunks:
+
+            return RAGResult(
+                query=request.query,
+                answer=(
+                    "I could not find relevant information in the "
+                    "selected documents. Please rephrase your question "
+                    "or select another document."
+                ),
+                retrieved_chunks=[],
+                total_retrieved=0,
+                grounded=False,
+                grounding_status="insufficient_evidence",
+            )
+
+        # STEP 4: BUILD CONTEXT
+
+        context_result = self.context_builder.build(
+            retrieved_chunks
+        )
+
+        if not context_result.context:
+
+            return RAGResult(
+                query=request.query,
+                answer=(
+                    "The retrieved document content could not fit "
+                    "within the available context budget."
+                ),
+                retrieved_chunks=retrieved_chunks,
+                total_retrieved=len(retrieved_chunks),
+                grounded=False,
+                included_chunks=0,
+                excluded_chunks=len(retrieved_chunks),
+                context_characters=0,
+                grounding_status="insufficient_evidence",
+            )
+
+        # STEP 5: BUILD RAG PROMPT
+
+        prompt_result = self.prompt_builder.build(
+            query=request.query,
+            context=context_result.context,
+            sources=context_result.sources,
+        )
+
+        # STEP 6: GENERATE ANSWER
+
+        answer = await self.llm_generator(
+            prompt_result.prompt
+        )
+
+        # STEP 7: OUTPUT SAFETY VALIDATION
+
+        output_safety = validate_output(answer)
+
+        if not output_safety.allowed:
+
+            return RAGResult(
+                query=request.query,
+                answer=(
+                    output_safety.response
+                    or "The generated response could not be displayed."
+                ),
+                retrieved_chunks=retrieved_chunks,
+                total_retrieved=len(retrieved_chunks),
+                grounded=False,
+                included_chunks=context_result.included_chunks,
+                excluded_chunks=context_result.excluded_chunks,
+                context_characters=context_result.total_characters,
+                grounding_status="not_verified",
+            )
+
+        # STEP 8: CITATION EXTRACTION AND VALIDATION
+
+        citation_result = self.citation_service.extract(
+            answer=answer,
+            sources=context_result.sources,
+        )
+
+        # STEP 9: GROUNDING AND CITATION COVERAGE VERIFICATION
+
+        grounding_report = self.grounding_service.verify(
+            answer=answer,
+            sources=context_result.sources,
+            citation_result=citation_result,
+        )
+
+        # STEP 10: RETURN STRUCTURED RAG RESULT
+
+        return RAGResult(
+            query=request.query,
+            answer=answer,
+            retrieved_chunks=retrieved_chunks,
+            total_retrieved=len(retrieved_chunks),
+
+            # This indicates citation checks passed.
+            # It does not prove semantic faithfulness.
+            grounded=(
+                grounding_report.status == "citation_checks_passed"
+            ),
+
+            included_chunks=context_result.included_chunks,
+            excluded_chunks=context_result.excluded_chunks,
+            context_characters=context_result.total_characters,
+
+            citations=citation_result.citations,
+            citation_issues=citation_result.issues,
+
+            grounding_status=grounding_report.status,
+            grounding_report=grounding_report,
+        )
+========== app\services\llm_providers\provider_router.py ==========
+import logging
+import time
+
+from app.core.llm_provider_config import (
+    LLMProviderSettings,
+    llm_provider_settings,
+)
+
+from app.schemas.llm_provider import (
+    LLMGenerationResult,
+    LLMProviderAttempt,
+    LLMProviderStatus,
+)
+
+from app.services.llm_providers.exceptions import (
+    LLMProviderConfigurationError,
+    LLMProviderUnavailableError,
+    LLMProviderAuthenticationError,
+    LLMProviderExecutionError,
+    LLMAllProvidersFailedError,
+)
+
+from app.services.llm_providers.provider_registry import (
+    LLMProviderRegistry,
+    llm_provider_registry,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+class LLMProviderRouter:
+
+    def __init__(
+        self,
+        registry: LLMProviderRegistry = llm_provider_registry,
+        settings: LLMProviderSettings = llm_provider_settings,
+    ):
+
+        self.registry = registry
+        self.settings = settings
+
+    def _provider_order(self) -> tuple[str, ...]:
+
+        return (
+            self.settings.primary_provider,
+            *self.settings.fallback_providers,
+        )
+
+    async def generate(
+        self,
+        prompt: str,
+    ) -> LLMGenerationResult:
+
+        if not isinstance(prompt, str) or not prompt.strip():
+
+            raise ValueError(
+                "Prompt cannot be empty."
+            )
+
+        provider_order = self._provider_order()
+
+        # Resolve all providers before execution.
+        # A misspelled or unregistered fallback must not
+        # silently produce partial provider configuration.
+
+        providers = [
+            self.registry.get(name)
+            for name in provider_order
+        ]
+
+        attempts = []
+
+        started_at = time.perf_counter()
+
+        for index, provider in enumerate(providers):
+
+            provider_started = time.perf_counter()
+
+            try:
+
+                response = await provider.generate(
+                    prompt.strip()
+                )
+
+                if (
+                    not isinstance(response, str)
+                    or not response.strip()
+                ):
+
+                    raise LLMProviderExecutionError(
+                        "Provider returned an empty response."
+                    )
+
+                provider_elapsed = (
+                    time.perf_counter()
+                    - provider_started
+                ) * 1000
+
+                attempts.append(
+                    LLMProviderAttempt(
+                        provider=provider.name,
+                        success=True,
+                        retryable=False,
+                        execution_time_ms=round(
+                            provider_elapsed,
+                            3,
+                        ),
+                    )
+                )
+
+                total_elapsed = (
+                    time.perf_counter()
+                    - started_at
+                ) * 1000
+
+                status = (
+                    LLMProviderStatus.SUCCESS
+                    if index == 0
+                    else LLMProviderStatus.FALLBACK_SUCCESS
+                )
+
+                logger.info(
+                    "LLM generation succeeded: "
+                    "provider=%s fallback=%s",
+                    provider.name,
+                    index > 0,
+                )
+
+                return LLMGenerationResult(
+                    response=response.strip(),
+                    provider=provider.name,
+                    status=status,
+                    attempts=attempts,
+                    total_execution_time_ms=round(
+                        total_elapsed,
+                        3,
+                    ),
+                )
+
+            except LLMProviderConfigurationError:
+
+                # Configuration problems cannot be repaired
+                # by switching providers automatically.
+                raise
+
+            except LLMProviderAuthenticationError:
+
+                # Authentication failures are non-retryable.
+                raise
+
+            except LLMProviderUnavailableError as exc:
+
+                retryable = True
+
+                error_code = "provider_unavailable"
+
+                logger.warning(
+                    "LLM provider unavailable: provider=%s",
+                    provider.name,
+                )
+
+            except LLMProviderExecutionError:
+
+                retryable = False
+
+                error_code = "provider_execution_failed"
+
+                logger.exception(
+                    "LLM provider execution failed: provider=%s",
+                    provider.name,
+                )
+
+            except Exception:
+
+                retryable = False
+
+                error_code = "unexpected_provider_failure"
+
+                logger.exception(
+                    "Unexpected LLM provider failure: provider=%s",
+                    provider.name,
+                )
+
+            provider_elapsed = (
+                time.perf_counter()
+                - provider_started
+            ) * 1000
+
+            attempts.append(
+                LLMProviderAttempt(
+                    provider=provider.name,
+                    success=False,
+                    retryable=retryable,
+                    execution_time_ms=round(
+                        provider_elapsed,
+                        3,
+                    ),
+                    error_code=error_code,
+                )
+            )
+
+            if not retryable:
+
+                break
+
+        total_elapsed = (
+            time.perf_counter()
+            - started_at
+        ) * 1000
+
+        logger.error(
+            "All eligible LLM provider attempts failed."
+        )
+
+        raise LLMAllProvidersFailedError(
+            "ScholarAI could not generate a response "
+            "using the configured LLM providers.",
+            attempts=attempts,
+        )
+
+
+llm_provider_router = LLMProviderRouter()
+========== app\services\llm_providers\provider_setup.py ==========
+from app.services.llm_providers.gemini_provider import (
+    GeminiProvider,
+)
+
+from app.services.llm_providers.provider_registry import (
+    llm_provider_registry,
+)
+
+
+def register_default_llm_providers() -> None:
+
+    if not llm_provider_registry.contains("gemini"):
+
+        llm_provider_registry.register(
+            GeminiProvider()
+        )
+========== app\services\response_intelligence\response_intelligence_service.py ==========
+from app.schemas.response_intelligence import (
+    ResponseFormat,
+    ResponseIntelligenceRequest,
+    ResponseIntelligenceResult,
+    ResponseValidationStatus,
+)
+
+from app.services.response_intelligence.response_parser import (
+    ResponseParser,
+)
+
+from app.services.response_intelligence.response_normalizer import (
+    ResponseNormalizer,
+)
+
+from app.services.response_intelligence.response_validator import (
+    ResponseValidator,
+)
+
+from app.services.response_intelligence.exceptions import (
+    ResponseSafetyError,
+)
+
+from app.services.safety_service import validate_output
+
+
+class ResponseIntelligenceService:
+
+    def __init__(
+        self,
+        parser: ResponseParser | None = None,
+        normalizer: ResponseNormalizer | None = None,
+        validator: ResponseValidator | None = None,
+    ):
+        self.parser = parser or ResponseParser()
+        self.normalizer = normalizer or ResponseNormalizer()
+        self.validator = validator or ResponseValidator()
+
+    def process(
+        self,
+        request: ResponseIntelligenceRequest,
+    ) -> ResponseIntelligenceResult:
+
+        # STEP 1: NORMALIZE
+
+        normalized_response = self.normalizer.normalize(
+            request.response
+        )
+
+        structured_response = None
+
+        # STEP 2: PROCESS RESPONSE FORMAT
+
+        if request.response_format == ResponseFormat.PLAIN_TEXT:
+
+            final_response = normalized_response
+
+        elif request.response_format == ResponseFormat.ACADEMIC:
+
+            # Academic structured responses must contain valid JSON.
+            structured_response = self.parser.parse(
+                normalized_response
+            )
+
+            final_response = self._format_structured_response(
+                structured_response,
+                request.response_format,
+            )
+
+        else:
+
+            # Comparison, summary and step-by-step responses
+            # may be ordinary text or structured JSON.
+            # Parse only when the response appears to contain JSON.
+
+            stripped_response = normalized_response.lstrip()
+
+            if stripped_response.startswith(("{", "```")):
+
+                structured_response = self.parser.parse(
+                    normalized_response
+                )
+
+                final_response = self._format_structured_response(
+                    structured_response,
+                    request.response_format,
+                )
+
+            else:
+
+                final_response = normalized_response
+
+        # STEP 3: QUALITY VALIDATION
+
+        quality_issues = self.validator.validate(
+            final_response,
+            request.response_format,
+        )
+
+        # STEP 4: SAFETY VALIDATION
+
+        safety_validated = False
+
+        if request.validate_safety:
+
+            safety_result = validate_output(final_response)
+
+            if not safety_result.allowed:
+                raise ResponseSafetyError(
+                    "Generated response failed output safety validation."
+                )
+
+            safety_validated = True
+
+        # STEP 5: VALIDATION STATUS
+
+        validation_status = (
+            ResponseValidationStatus.PARTIALLY_VALID
+            if quality_issues
+            else ResponseValidationStatus.VALID
+        )
+
+        # STEP 6: BUILD RESULT
+
+        return ResponseIntelligenceResult(
+            response=final_response,
+            response_format=request.response_format,
+            validation_status=validation_status,
+            structured_response=structured_response,
+            quality_issues=quality_issues,
+            safety_validated=safety_validated,
+            character_count=len(final_response),
+            word_count=len(final_response.split()),
+        )
+
+    @staticmethod
+    def _format_structured_response(
+        structured_response,
+        response_format: ResponseFormat,
+    ) -> str:
+
+        sections = [
+            structured_response.answer
+        ]
+
+        if structured_response.key_points:
+            sections.append(
+                "## Key Points\n"
+                + "\n".join(
+                    f"- {point}"
+                    for point in structured_response.key_points
+                )
+            )
+
+        if structured_response.examples:
+            sections.append(
+                "## Examples\n"
+                + "\n".join(
+                    f"- {example}"
+                    for example in structured_response.examples
+                )
+            )
+
+        if structured_response.caveats:
+            sections.append(
+                "## Important Notes\n"
+                + "\n".join(
+                    f"- {caveat}"
+                    for caveat in structured_response.caveats
+                )
+            )
+
+        if structured_response.conclusion:
+            sections.append(
+                "## Conclusion\n"
+                + structured_response.conclusion
+            )
+
+        return "\n\n".join(sections)
+
+
+response_intelligence_service = ResponseIntelligenceService()
+========== app\services\query_classification_service.py ==========
+
+from __future__ import annotations
+
+import re
+
+from dataclasses import dataclass
+
+from app.schemas.query_classification import (
+    AcademicTaskType,
+    ClassificationEvidence,
+    QueryClassification,
+    QueryIntent,
+)
+
+
+@dataclass(frozen=True)
+class IntentRule:
+    """
+    Defines a deterministic intent detection rule.
+    """
+
+    name: str
+    patterns: tuple[str, ...]
+    keywords: tuple[str, ...]
+    weight: float
+
+
+class QueryClassificationService:
+    """
+    Advanced deterministic query classification engine.
+
+    Responsibilities:
+
+    1. Normalize incoming queries.
+    2. Detect the student's primary intent.
+    3. Identify academic task type.
+    4. Identify required context.
+    5. Produce transparent classification evidence.
+    6. Provide a suggested downstream workflow.
+
+    This service does not execute workflows.
+    """
+
+    VERSION = "1.0.0"
+
+    MIN_CONFIDENCE = 0.35
+
+    INTENT_RULES = {
+        QueryIntent.DOCUMENT_GROUNDED: IntentRule(
+            name="document_grounded",
+            patterns=(
+                r"\bfrom\s+(?:my\s+)?(?:pdf|document|notes|file)\b",
+                r"\bin\s+(?:my\s+)?(?:pdf|document|uploaded\s+file)\b",
+                r"\bbased\s+on\s+(?:my\s+)?(?:pdf|document|notes)\b",
+                r"\baccording\s+to\s+(?:my\s+)?(?:pdf|document)\b",
+                r"\buploaded\s+(?:pdf|document|file)\b",
+                r"\bthis\s+(?:pdf|document|file)\b",
+            ),
+            keywords=(
+                "uploaded document",
+                "uploaded pdf",
+                "my pdf",
+                "my notes",
+                "document content",
+                "document",
+                "pdf",
+            ),
+            weight=1.0,
+        ),
+
+        QueryIntent.RESOURCE_DISCOVERY: IntentRule(
+            name="resource_discovery",
+            patterns=(
+                r"\bfind\s+(?:me\s+)?(?:videos|tutorials|websites|courses|resources)\b",
+                r"\bsearch\s+for\s+(?:videos|tutorials|courses|resources)\b",
+                r"\bwhere\s+can\s+i\s+learn\b",
+                r"\bfree\s+(?:courses|tutorials|learning\s+resources)\b",
+                r"\beducational\s+(?:videos|websites|resources)\b",
+            ),
+            keywords=(
+                "youtube videos",
+                "learning resources",
+                "educational resources",
+                "tutorials",
+                "courses",
+                "videos",
+                "websites",
+            ),
+            weight=0.95,
+        ),
+
+        QueryIntent.RECOMMENDATION: IntentRule(
+            name="recommendation",
+            patterns=(
+                r"\brecommend\s+(?:me\s+)?(?:some\s+)?",
+                r"\bsuggest\s+(?:me\s+)?(?:some\s+)?",
+                r"\bwhat\s+should\s+i\s+(?:read|watch|learn|study)\b",
+                r"\bwhich\s+(?:resource|course|book|video)\s+is\s+best\b",
+                r"\bbest\s+(?:resources|courses|books|videos)\s+for\b",
+            ),
+            keywords=(
+                "recommend",
+                "recommendation",
+                "suggest",
+                "best resource",
+                "best course",
+                "personalized resources",
+            ),
+            weight=0.90,
+        ),
+
+        QueryIntent.STUDY_MATERIAL_GENERATION: IntentRule(
+            name="study_material_generation",
+            patterns=(
+                r"\bgenerate\s+(?:some\s+)?(?:mcqs|questions|quiz|flashcards)\b",
+                r"\bcreate\s+(?:some\s+)?(?:mcqs|questions|quiz|flashcards)\b",
+                r"\bmake\s+(?:a\s+)?(?:quiz|test|practice\s+test)\b",
+                r"\bprepare\s+(?:a\s+)?(?:question\s+bank|practice\s+questions)\b",
+                r"\btest\s+my\s+knowledge\b",
+            ),
+            keywords=(
+                "mcq",
+                "mcqs",
+                "multiple choice questions",
+                "flashcards",
+                "question bank",
+                "practice questions",
+                "quiz",
+            ),
+            weight=0.95,
+        ),
+
+        QueryIntent.CONVERSATION_FOLLOW_UP: IntentRule(
+            name="conversation_follow_up",
+            patterns=(
+                r"^(?:why|how|what|when|where)\??$",
+                r"^(?:explain|elaborate)\s+(?:more|that|this)\b",
+                r"^(?:give|show)\s+(?:me\s+)?another\s+example\b",
+                r"^(?:what|how)\s+about\s+(?:that|this|it)\b",
+                r"^(?:continue|go\s+on|tell\s+me\s+more)\b",
+                r"^(?:simplify|simpler|in\s+simple\s+words)\b",
+            ),
+            keywords=(
+                "explain more",
+                "another example",
+                "continue",
+                "tell me more",
+                "what about that",
+                "simplify it",
+            ),
+            weight=1.0,
+        ),
+    }
+
+    TASK_RULES = {
+        AcademicTaskType.COMPARISON: (
+            r"\bcompare\b",
+            r"\bdifference\s+between\b",
+            r"\bdifferentiate\b",
+            r"\bversus\b",
+            r"\bvs\.?\b",
+            r"\bsimilarities\s+and\s+differences\b",
+        ),
+
+        AcademicTaskType.PROBLEM_SOLVING: (
+            r"\bsolve\b",
+            r"\bcalculate\b",
+            r"\bfind\s+the\s+value\b",
+            r"\bderive\b",
+            r"\bprove\b",
+            r"\bcompute\b",
+            r"\bconvert\b",
+            r"\bdetermine\b",
+        ),
+
+        AcademicTaskType.SUMMARIZATION: (
+            r"\bsummarize\b",
+            r"\bsummarise\b",
+            r"\bsummary\b",
+            r"\bkey\s+points\b",
+            r"\bimportant\s+points\b",
+            r"\bshort\s+notes\b",
+            r"\bbrief\s+notes\b",
+        ),
+
+        AcademicTaskType.QUESTION_GENERATION: (
+            r"\bgenerate\s+questions\b",
+            r"\bcreate\s+questions\b",
+            r"\bpractice\s+questions\b",
+            r"\bmcqs?\b",
+            r"\bquiz\b",
+            r"\bflashcards\b",
+        ),
+
+        AcademicTaskType.DEFINITION: (
+            r"^\s*(?:define|what\s+is|what\s+are)\b",
+            r"\bdefinition\s+of\b",
+            r"\bmeaning\s+of\b",
+        ),
+
+        AcademicTaskType.EXPLANATION: (
+            r"\bexplain\b",
+            r"\bdescribe\b",
+            r"\bhow\s+does\b",
+            r"\bhow\s+do\b",
+            r"\bhow\s+it\s+works\b",
+            r"\bworking\s+of\b",
+        ),
+    }
+
+    WORKFLOW_MAPPING = {
+        QueryIntent.ACADEMIC_LEARNING:
+            "academic_response",
+
+        QueryIntent.DOCUMENT_GROUNDED:
+            "document_rag",
+
+        QueryIntent.RESOURCE_DISCOVERY:
+            "resource_discovery",
+
+        QueryIntent.RECOMMENDATION:
+            "recommendation",
+
+        QueryIntent.STUDY_MATERIAL_GENERATION:
+            "study_material_generation",
+
+        QueryIntent.CONVERSATION_FOLLOW_UP:
+            "conversation_aware_response",
+
+        QueryIntent.UNKNOWN:
+            "general_chat_fallback",
+    }
+
+    def __init__(
+        self,
+        minimum_confidence: float = MIN_CONFIDENCE,
+    ):
+        if not 0.0 <= minimum_confidence <= 1.0:
+            raise ValueError(
+                "minimum_confidence must be between 0 and 1."
+            )
+
+        self.minimum_confidence = minimum_confidence
+
+    @staticmethod
+    def normalize_query(query: str) -> str:
+        """
+        Normalize query text without changing its meaning.
+        """
+
+        if not isinstance(query, str):
+            raise ValueError("Query must be a string.")
+
+        normalized = query.strip().lower()
+
+        normalized = re.sub(
+            r"\s+",
+            " ",
+            normalized,
+        )
+
+        if not normalized:
+            raise ValueError("Query cannot be empty.")
+
+        if len(normalized) > 5000:
+            raise ValueError(
+                "Query exceeds the maximum allowed length."
+            )
+
+        return normalized
+
+    @staticmethod
+    def _matches_pattern(
+        query: str,
+        pattern: str,
+    ) -> bool:
+        return re.search(
+            pattern,
+            query,
+            flags=re.IGNORECASE,
+        ) is not None
+
+    def _score_intent(
+        self,
+        query: str,
+        intent: QueryIntent,
+    ) -> tuple[float, list[str], list[str]]:
+        """
+        Calculate a deterministic intent score.
+
+        Pattern matches carry more weight than keyword matches.
+        """
+
+        rule = self.INTENT_RULES[intent]
+
+        matched_patterns = [
+            pattern
+            for pattern in rule.patterns
+            if self._matches_pattern(query, pattern)
+        ]
+
+        matched_keywords = [
+            keyword
+            for keyword in rule.keywords
+            if keyword in query
+        ]
+
+        pattern_score = min(
+            len(matched_patterns) * 0.55,
+            1.0,
+        )
+
+        keyword_score = min(
+            len(matched_keywords) * 0.25,
+            0.75,
+        )
+
+        if matched_patterns:
+            score = min(
+                1.0,
+                (
+                    pattern_score * 0.75
+                    + keyword_score * 0.25
+                ) * rule.weight,
+            )
+
+        elif matched_keywords:
+            score = min(
+                0.65,
+                keyword_score * rule.weight,
+            )
+
+        else:
+            score = 0.0
+
+        return (
+            score,
+            matched_patterns,
+            matched_keywords,
+        )
+
+    def _detect_task_type(
+        self,
+        query: str,
+    ) -> AcademicTaskType:
+        """
+        Detect the academic operation requested by the student.
+        """
+
+        for task_type, patterns in self.TASK_RULES.items():
+            if any(
+                self._matches_pattern(query, pattern)
+                for pattern in patterns
+            ):
+                return task_type
+
+        return AcademicTaskType.GENERAL
+
+    def _get_task_evidence(
+        self,
+        query: str,
+        task_type: AcademicTaskType,
+    ) -> tuple[list[str], list[str]]:
+        """
+        Return matched task patterns and relevant query terms.
+        """
+
+        if task_type == AcademicTaskType.GENERAL:
+            return [], []
+
+        patterns = self.TASK_RULES[task_type]
+
+        matched_patterns = [
+            pattern
+            for pattern in patterns
+            if self._matches_pattern(query, pattern)
+        ]
+
+        matched_keywords = [
+            word
+            for word in query.split()
+            if word.isalpha() and len(word) > 2
+        ]
+
+        return matched_patterns, matched_keywords
+
+    def _is_follow_up_query(
+        self,
+        query: str,
+    ) -> bool:
+        """
+        Determine whether the query matches a follow-up pattern.
+        """
+
+        rule = self.INTENT_RULES[
+            QueryIntent.CONVERSATION_FOLLOW_UP
+        ]
+
+        return any(
+            self._matches_pattern(query, pattern)
+            for pattern in rule.patterns
+        )
+
+    def _detect_intent(
+        self,
+        query: str,
+        has_conversation_context: bool,
+        has_document_context: bool,
+    ) -> tuple[
+        QueryIntent,
+        float,
+        ClassificationEvidence,
+        bool,
+    ]:
+        """
+        Determine primary intent using explicit precedence.
+
+        Precedence:
+        1. Explicit document-grounded request.
+        2. Context-dependent follow-up with conversation.
+        3. Other recognized intents.
+        4. Recognized academic task fallback.
+        5. Unknown.
+        """
+
+        scores = {}
+
+        for intent in self.INTENT_RULES:
+            score, patterns, keywords = self._score_intent(
+                query,
+                intent,
+            )
+
+            scores[intent] = {
+                "score": score,
+                "patterns": patterns,
+                "keywords": keywords,
+            }
+
+        # Explicit document references take priority over
+        # generic follow-up phrases such as "explain this".
+        if scores[QueryIntent.DOCUMENT_GROUNDED]["score"] > 0:
+            selected_intent = QueryIntent.DOCUMENT_GROUNDED
+
+        # A follow-up requires actual conversation context.
+        elif self._is_follow_up_query(query):
+            if not has_conversation_context:
+                evidence = ClassificationEvidence(
+                    matched_patterns=scores[
+                        QueryIntent.CONVERSATION_FOLLOW_UP
+                    ]["patterns"],
+                    matched_keywords=scores[
+                        QueryIntent.CONVERSATION_FOLLOW_UP
+                    ]["keywords"],
+                    rules_applied=[
+                        "follow_up_without_conversation_context",
+                        "selected_intent:unknown",
+                    ],
+                )
+
+                return (
+                    QueryIntent.UNKNOWN,
+                    0.25,
+                    evidence,
+                    False,
+                )
+
+            selected_intent = (
+                QueryIntent.CONVERSATION_FOLLOW_UP
+            )
+
+        else:
+            # Evaluate the remaining recognized intents.
+            candidates = [
+                intent
+                for intent in self.INTENT_RULES
+                if intent not in (
+                    QueryIntent.DOCUMENT_GROUNDED,
+                    QueryIntent.CONVERSATION_FOLLOW_UP,
+                )
+                and scores[intent]["score"] > 0
+            ]
+
+            candidates.sort(
+                key=lambda intent: scores[intent]["score"],
+                reverse=True,
+            )
+
+            if candidates:
+                selected_intent = candidates[0]
+
+            else:
+                # Recognized academic tasks must not fall through
+                # to UNKNOWN merely because no primary intent
+                # pattern matched.
+                task_type = self._detect_task_type(query)
+
+                if task_type != AcademicTaskType.GENERAL:
+                    matched_patterns, matched_keywords = (
+                        self._get_task_evidence(
+                            query,
+                            task_type,
+                        )
+                    )
+
+                    evidence = ClassificationEvidence(
+                        matched_patterns=matched_patterns,
+                        matched_keywords=matched_keywords,
+                        rules_applied=[
+                            "academic_task_fallback",
+                            "selected_intent:academic_learning",
+                        ],
+                    )
+
+                    if has_conversation_context:
+                        evidence.rules_applied.append(
+                            "conversation_context_available"
+                        )
+
+                    if has_document_context:
+                        evidence.rules_applied.append(
+                            "document_context_available"
+                        )
+
+                    return (
+                        QueryIntent.ACADEMIC_LEARNING,
+                        0.55,
+                        evidence,
+                        False,
+                    )
+
+                selected_intent = QueryIntent.UNKNOWN
+
+        selected = scores.get(
+            selected_intent,
+            {
+                "score": 0.25,
+                "patterns": [],
+                "keywords": [],
+            },
+        )
+
+        confidence = (
+            selected["score"]
+            if selected_intent != QueryIntent.UNKNOWN
+            else 0.25
+        )
+
+        rules_applied = [
+            f"selected_intent:{selected_intent.value}"
+        ]
+
+        if has_conversation_context:
+            rules_applied.append(
+                "conversation_context_available"
+            )
+
+        if has_document_context:
+            rules_applied.append(
+                "document_context_available"
+            )
+
+        evidence = ClassificationEvidence(
+            matched_patterns=selected["patterns"],
+            matched_keywords=selected["keywords"],
+            rules_applied=rules_applied,
+        )
+
+        competing_scores = [
+            item["score"]
+            for intent, item in scores.items()
+            if intent != selected_intent
+            and item["score"] > 0
+            and (
+                intent != QueryIntent.CONVERSATION_FOLLOW_UP
+                or has_conversation_context
+            )
+        ]
+
+        ambiguous = (
+            bool(competing_scores)
+            and abs(
+                confidence - max(competing_scores)
+            ) < 0.10
+        )
+
+        if confidence < self.minimum_confidence:
+            selected_intent = QueryIntent.UNKNOWN
+            confidence = 0.25
+
+            evidence.rules_applied.append(
+                "confidence_below_minimum"
+            )
+
+        return (
+            selected_intent,
+            confidence,
+            evidence,
+            ambiguous,
+        )
+
+    def classify(
+        self,
+        query: str,
+        has_conversation_context: bool = False,
+        has_document_context: bool = False,
+    ) -> QueryClassification:
+        """
+        Classify a student query.
+
+        The result is metadata only. It does not execute
+        the selected workflow.
+        """
+
+        normalized_query = self.normalize_query(query)
+
+        (
+            intent,
+            confidence,
+            evidence,
+            ambiguous,
+        ) = self._detect_intent(
+            query=normalized_query,
+            has_conversation_context=has_conversation_context,
+            has_document_context=has_document_context,
+        )
+
+        task_type = self._detect_task_type(
+            normalized_query
+        )
+
+        requires_conversation = (
+            intent == QueryIntent.CONVERSATION_FOLLOW_UP
+        )
+
+        requires_document = (
+            intent == QueryIntent.DOCUMENT_GROUNDED
+            or (
+                has_document_context
+                and task_type == AcademicTaskType.SUMMARIZATION
+            )
+        )
+
+        requires_external_resources = (
+            intent == QueryIntent.RESOURCE_DISCOVERY
+        )
+
+        requires_personalization = (
+            intent == QueryIntent.RECOMMENDATION
+        )
+
+        return QueryClassification(
+            intent=intent,
+            task_type=task_type,
+            confidence=confidence,
+            suggested_workflow=self.WORKFLOW_MAPPING[intent],
+            requires_conversation_context=requires_conversation,
+            requires_document_context=requires_document,
+            requires_external_resources=requires_external_resources,
+            requires_personalization=requires_personalization,
+            ambiguous=ambiguous,
+            evidence=evidence,
+            classifier_version=self.VERSION,
+        )
+
+
+# Shared stateless classifier instance.
+query_classification_service = QueryClassificationService()
+
+========== app\services\query_rewriting_service.py ==========
+from __future__ import annotations
+
+import re
+
+from app.schemas.query_classification import (
+    AcademicTaskType,
+    QueryClassification,
+    QueryIntent,
+)
+
+from app.schemas.query_rewriting import (
+    QueryRewriteRequest,
+    QueryRewriteResult,
+    RewriteStrategy,
+)
+
+from app.services.query_classification_service import (
+    query_classification_service,
+)
+
+
+class QueryRewritingService:
+    """
+    Deterministic intelligent query rewriting service.
+
+    Responsibilities:
+    1. Normalize incoming queries.
+    2. Resolve context-dependent follow-up queries.
+    3. Preserve document-grounded queries.
+    4. Enrich academic retrieval queries.
+    5. Generate bounded, deduplicated search queries.
+    """
+
+    VERSION = "1.0.0"
+
+    MAX_SEARCH_QUERIES = 3
+
+    TASK_EXPANSIONS = {
+        AcademicTaskType.EXPLANATION:
+            "concepts working mechanism examples",
+
+        AcademicTaskType.COMPARISON:
+            "similarities differences",
+
+        AcademicTaskType.PROBLEM_SOLVING:
+            "step-by-step solution",
+
+        AcademicTaskType.SUMMARIZATION:
+            "key points summary",
+
+        AcademicTaskType.DEFINITION:
+            "definition",
+
+        AcademicTaskType.QUESTION_GENERATION:
+            "practice questions",
+    }
+
+    DOCUMENT_REFERENCE_PATTERNS = (
+        r"\bfrom\s+(?:my\s+)?(?:pdf|document|notes|file)\b",
+        r"\bin\s+(?:my\s+)?(?:pdf|document|uploaded\s+file)\b",
+        r"\bbased\s+on\s+(?:my\s+)?(?:pdf|document|notes)\b",
+        r"\baccording\s+to\s+(?:my\s+)?(?:pdf|document)\b",
+        r"\buploaded\s+(?:pdf|document|file)\b",
+        r"\bthis\s+(?:pdf|document|file)\b",
+    )
+
+    FOLLOW_UP_PATTERNS = (
+        r"^explain\s+(?:more|that|this)\.?$",
+        r"^elaborate\s+(?:more|that|this)\.?$",
+        r"^give\s+(?:me\s+)?another\s+example\.?$",
+        r"^show\s+(?:me\s+)?another\s+example\.?$",
+        r"^(?:what|how)\s+about\s+(?:that|this|it)\??$",
+        r"^continue\.?$",
+        r"^go\s+on\.?$",
+        r"^tell\s+me\s+more\.?$",
+        r"^simplify\s+(?:it|this|that)\.?$",
+        r"^make\s+it\s+simpler\.?$",
+        r"^in\s+simple\s+words\.?$",
+        r"^(?:why|how|what|when|where)\??$",
+    )
+
+    def __init__(self):
+        self.classifier = query_classification_service
+
+    @staticmethod
+    def normalize_query(query: str) -> str:
+
+        if not isinstance(query, str):
+            raise ValueError("Query must be a string.")
+
+        normalized = re.sub(
+            r"\s+",
+            " ",
+            query.strip(),
+        )
+
+        if not normalized:
+            raise ValueError("Query cannot be empty.")
+
+        if len(normalized) > 5000:
+            raise ValueError(
+                "Query exceeds the maximum allowed length."
+            )
+
+        return normalized
+
+    @staticmethod
+    def _matches_any(
+        query: str,
+        patterns: tuple[str, ...],
+    ) -> bool:
+
+        return any(
+            re.search(
+                pattern,
+                query,
+                flags=re.IGNORECASE,
+            )
+            is not None
+            for pattern in patterns
+        )
+
+    @classmethod
+    def _is_document_grounded(
+        cls,
+        query: str,
+        classification: QueryClassification,
+    ) -> bool:
+
+        return (
+            classification.intent == QueryIntent.DOCUMENT_GROUNDED
+            or cls._matches_any(
+                query,
+                cls.DOCUMENT_REFERENCE_PATTERNS,
+            )
+        )
+
+    @classmethod
+    def _is_follow_up(cls, query: str) -> bool:
+
+        return cls._matches_any(
+            query,
+            cls.FOLLOW_UP_PATTERNS,
+        )
+
+    @staticmethod
+    def _resolve_contextual_query(
+        query: str,
+        context: str,
+    ) -> str | None:
+
+        normalized_query = query.strip().lower().rstrip(".!?")
+        normalized_context = context.strip()
+
+        if not normalized_context:
+            return None
+
+        # Simplification requests
+        if normalized_query in {
+            "simplify it",
+            "simplify this",
+            "simplify that",
+            "make it simpler",
+            "in simple words",
+        }:
+            return (
+                f"Explain {normalized_context} "
+                "in simpler terms"
+            )
+
+        # Explanation requests
+        if normalized_query in {
+            "explain more",
+            "explain this",
+            "explain that",
+            "elaborate more",
+            "elaborate this",
+            "elaborate that",
+            "tell me more",
+        }:
+            return f"Explain {normalized_context}"
+
+        # Example requests
+        if normalized_query in {
+            "give another example",
+            "give me another example",
+            "show another example",
+            "show me another example",
+        }:
+            return f"Give another example of {normalized_context}"
+
+        # Continuation requests
+        if normalized_query in {
+            "continue",
+            "go on",
+        }:
+            return f"Continue explaining {normalized_context}"
+
+        # Topic-reference requests
+        if normalized_query in {
+            "what about this",
+            "what about that",
+            "what about it",
+            "how about this",
+            "how about that",
+            "how about it",
+        }:
+            return f"Explain {normalized_context}"
+
+        # Short follow-up questions
+        if normalized_query in {
+           "why",
+           "how",
+           "what",
+           "when",
+           "where",
+}:
+           original_follow_up = query.strip().rstrip(".!?")
+
+           return (
+        f"Answer the follow-up question '{original_follow_up}?' "
+        f"about {normalized_context}"
+    )
+
+    @classmethod
+    def _build_retrieval_query(
+        cls,
+        standalone_query: str,
+        task_type: AcademicTaskType,
+    ) -> str:
+
+        expansion = cls.TASK_EXPANSIONS.get(task_type)
+
+        if not expansion:
+            return standalone_query
+
+        existing_words = set(
+            re.findall(
+                r"\b\w+\b",
+                standalone_query.lower(),
+            )
+        )
+
+        expansion_words = set(
+            re.findall(
+                r"\b\w+\b",
+                expansion.lower(),
+            )
+        )
+
+        if expansion_words.issubset(existing_words):
+            return standalone_query
+
+        return f"{standalone_query} {expansion}"
+
+    @staticmethod
+    def _deduplicate_queries(
+        queries: list[str],
+        limit: int = 3,
+    ) -> list[str]:
+
+        results = []
+        seen = set()
+
+        for query in queries:
+
+            cleaned = query.strip()
+
+            if not cleaned:
+                continue
+
+            normalized = cleaned.casefold()
+
+            if normalized in seen:
+                continue
+
+            seen.add(normalized)
+            results.append(cleaned)
+
+            if len(results) >= limit:
+                break
+
+        return results
+
+    def rewrite(
+        self,
+        query: str | QueryRewriteRequest,
+        conversation_context: str | None = None,
+        classification: QueryClassification | None = None,
+    ) -> QueryRewriteResult:
+
+        # --------------------------------------------------
+        # STEP 1: VALIDATE INPUT
+        # --------------------------------------------------
+
+        if isinstance(query, QueryRewriteRequest):
+
+            request = query
+
+            original_query = request.query
+
+            conversation_context = (
+                request.conversation_context
+            )
+
+            if classification is None:
+                classification = request.classification
+
+        elif isinstance(query, str):
+
+            original_query = query
+
+        else:
+
+            raise ValueError(
+                "Query must be a string or QueryRewriteRequest."
+            )
+
+        normalized_query = self.normalize_query(
+            original_query
+        )
+
+        normalized_context = None
+
+        if conversation_context is not None:
+
+            if not isinstance(conversation_context, str):
+                raise ValueError(
+                    "Conversation context must be a string."
+                )
+
+            normalized_context = conversation_context.strip()
+
+            if len(normalized_context) > 3000:
+                raise ValueError(
+                    "Conversation context exceeds "
+                    "the maximum allowed length."
+                )
+
+            if not normalized_context:
+                normalized_context = None
+
+        # --------------------------------------------------
+        # STEP 2: CLASSIFY QUERY
+        # --------------------------------------------------
+
+        if classification is None:
+
+            classification = self.classifier.classify(
+                query=normalized_query,
+                has_conversation_context=(
+                    normalized_context is not None
+                ),
+                has_document_context=False,
+            )
+
+        if not isinstance(
+            classification,
+            QueryClassification,
+        ):
+            raise ValueError(
+                "Invalid query classification."
+            )
+
+        # --------------------------------------------------
+        # STEP 3: INITIALIZE REWRITE STATE
+        # --------------------------------------------------
+
+        standalone_query = normalized_query
+        retrieval_query = normalized_query
+
+        strategy = RewriteStrategy.UNCHANGED
+
+        context_used = False
+
+        reason = "No rewriting was required."
+
+        is_document_query = self._is_document_grounded(
+            normalized_query,
+            classification,
+        )
+
+        # --------------------------------------------------
+        # STEP 4: DOCUMENT QUERY PRESERVATION
+        # --------------------------------------------------
+
+        if is_document_query:
+
+            strategy = RewriteStrategy.UNCHANGED
+
+            reason = (
+                "Explicit document-grounded query preserved "
+                "for document retrieval."
+            )
+
+        # --------------------------------------------------
+        # STEP 5: CONTEXTUAL QUERY RESOLUTION
+        # --------------------------------------------------
+
+        elif (
+            normalized_context is not None
+            and self._is_follow_up(normalized_query)
+        ):
+
+            resolved_query = self._resolve_contextual_query(
+                query=normalized_query,
+                context=normalized_context,
+            )
+
+            if resolved_query:
+
+                standalone_query = resolved_query
+
+                retrieval_query = resolved_query
+
+                strategy = RewriteStrategy.CONTEXT_RESOLVED
+
+                context_used = True
+
+                reason = (
+                    "Resolved a context-dependent follow-up "
+                    "using conversation context."
+                )
+
+        # --------------------------------------------------
+        # STEP 6: NORMALIZATION
+        # --------------------------------------------------
+
+        elif normalized_query != original_query:
+
+            strategy = RewriteStrategy.NORMALIZED
+
+            reason = (
+                "Normalized query whitespace without "
+                "changing its meaning."
+            )
+
+        # --------------------------------------------------
+        # STEP 7: TASK-SPECIFIC ENRICHMENT
+        # --------------------------------------------------
+
+        if (
+            not is_document_query
+            and strategy != RewriteStrategy.CONTEXT_RESOLVED
+        ):
+
+            enriched_query = self._build_retrieval_query(
+                standalone_query=standalone_query,
+                task_type=classification.task_type,
+            )
+
+            if enriched_query != standalone_query:
+
+                retrieval_query = enriched_query
+
+                strategy = RewriteStrategy.TASK_ENRICHED
+
+                reason = (
+                    "Added task-specific retrieval terms "
+                    "to improve academic search relevance."
+                )
+
+        # --------------------------------------------------
+        # STEP 8: BUILD SEARCH QUERIES
+        # --------------------------------------------------
+
+        search_queries = self._deduplicate_queries(
+            [
+                standalone_query,
+                retrieval_query,
+            ],
+            limit=self.MAX_SEARCH_QUERIES,
+        )
+
+        # --------------------------------------------------
+        # STEP 9: BUILD RESULT
+        # --------------------------------------------------
+
+        rewritten = (
+            standalone_query != original_query
+            or retrieval_query != original_query
+        )
+
+        return QueryRewriteResult(
+            original_query=original_query,
+            normalized_query=normalized_query,
+            standalone_query=standalone_query,
+            retrieval_query=retrieval_query,
+            search_queries=search_queries,
+            strategy=strategy,
+            rewritten=rewritten,
+            context_used=context_used,
+            reason=reason,
+            classifier_version=classification.classifier_version,
+        )
+
+
+query_rewriting_service = QueryRewritingService()
+========== app\services\conversation_context_service.py ==========
+"""
+ScholarAI Conversation Context Management Service.
+
+Provides secure conversation history retrieval and
+bounded context-window construction.
+"""
+
+from __future__ import annotations
+
+import math
+import uuid
+
+from dataclasses import dataclass
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.core.conversation_context_config import (
+    conversation_context_settings,
+)
+
+from app.models.conversation import Conversation
+from app.models.message import Message
+
+from app.schemas.conversation_context import (
+    ConversationContextMessage,
+    ConversationContextResult,
+)
+
+
+# ==========================================================
+# EXCEPTIONS
+# ==========================================================
+
+class ConversationContextError(Exception):
+    """Base exception for context management."""
+
+
+class ConversationNotFoundError(ConversationContextError):
+    """Raised when the requested conversation is unavailable."""
+
+
+class ConversationContextValidationError(
+    ConversationContextError
+):
+    """Raised when context input is invalid."""
+
+
+# ==========================================================
+# INTERNAL MESSAGE REPRESENTATION
+# ==========================================================
+
+@dataclass(frozen=True)
+class ContextCandidate:
+
+    role: str
+
+    content: str
+
+    created_at: object | None
+
+    token_estimate: int
+
+
+# ==========================================================
+# CONTEXT MANAGEMENT SERVICE
+# ==========================================================
+
+class ConversationContextService:
+    """
+    Retrieves and constructs bounded conversation history.
+
+    Token counts are estimates, not provider-reported counts.
+    """
+
+    def __init__(self, settings=None):
+
+        self.settings = (
+            settings or conversation_context_settings
+        )
+
+    # ------------------------------------------------------
+    # TOKEN ESTIMATION
+    # ------------------------------------------------------
+
+    def estimate_tokens(self, text: str) -> int:
+
+        if not isinstance(text, str):
+            raise ConversationContextValidationError(
+                "Token estimation requires string input."
+            )
+
+        if not text:
+            return 0
+
+        characters_per_token = (
+            self.settings.estimated_characters_per_token
+        )
+
+        return math.ceil(
+            len(text) / characters_per_token
+        )
+
+    # ------------------------------------------------------
+    # CONVERSATION OWNERSHIP
+    # ------------------------------------------------------
+
+    @staticmethod
+    def _validate_uuid(value, field_name: str) -> uuid.UUID:
+
+        try:
+            return uuid.UUID(str(value))
+
+        except (ValueError, TypeError, AttributeError) as exc:
+
+            raise ConversationContextValidationError(
+                f"{field_name} must be a valid UUID."
+            ) from exc
+
+    def _get_owned_conversation(
+        self,
+        db: Session,
+        conversation_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> Conversation:
+
+        statement = select(Conversation).where(
+            Conversation.id == conversation_id,
+            Conversation.user_id == user_id,
+            Conversation.is_archived.is_(False),
+        )
+
+        conversation = db.execute(
+            statement
+        ).scalar_one_or_none()
+
+        if conversation is None:
+
+            raise ConversationNotFoundError(
+                "Conversation was not found or is not accessible."
+            )
+
+        return conversation
+
+    # ------------------------------------------------------
+    # MESSAGE RETRIEVAL
+    # ------------------------------------------------------
+
+    def _load_messages(
+        self,
+        db: Session,
+        conversation_id: uuid.UUID,
+    ) -> list[Message]:
+
+        statement = (
+            select(Message)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.role.in_(["user", "assistant"]),
+            )
+            .order_by(
+                Message.created_at.desc(),
+                Message.id.desc(),
+            )
+            .limit(
+                self.settings.max_history_messages
+            )
+        )
+
+        messages = list(
+            db.execute(statement).scalars().all()
+        )
+
+        # Database retrieval is newest-first.
+        # LLM context must be chronological.
+
+        messages.reverse()
+
+        return messages
+
+    # ------------------------------------------------------
+    # CANDIDATE VALIDATION
+    # ------------------------------------------------------
+
+    def _prepare_candidates(
+        self,
+        messages: list[Message],
+    ) -> list[ContextCandidate]:
+
+        candidates = []
+
+        for message in messages:
+
+            if message.role not in {
+                "user",
+                "assistant",
+            }:
+                continue
+
+            if not isinstance(message.content, str):
+                continue
+
+            content = message.content.strip()
+
+            if not content:
+                continue
+
+            if len(content) > (
+                self.settings.max_message_characters
+            ):
+                content = content[
+                    -self.settings.max_message_characters:
+                ]
+
+            token_estimate = self.estimate_tokens(
+                content
+            )
+
+            candidates.append(
+                ContextCandidate(
+                    role=message.role,
+                    content=content,
+                    created_at=message.created_at,
+                    token_estimate=token_estimate,
+                )
+            )
+
+        return candidates
+
+    # ------------------------------------------------------
+    # CONTEXT WINDOW CONSTRUCTION
+    # ------------------------------------------------------
+
+    def _select_context_messages(
+        self,
+        candidates: list[ContextCandidate],
+    ) -> tuple[list[ContextCandidate], int]:
+
+        selected = []
+
+        total_tokens = 0
+
+        excluded_messages = 0
+
+        budget = self.settings.max_context_tokens
+
+        # Select newest messages first to prioritize
+        # recent conversational context.
+
+        for candidate in reversed(candidates):
+
+            if (
+                total_tokens + candidate.token_estimate
+                > budget
+            ):
+
+                excluded_messages += 1
+                continue
+
+            selected.append(candidate)
+
+            total_tokens += candidate.token_estimate
+
+        # Restore chronological order.
+
+        selected.reverse()
+
+        return selected, excluded_messages
+
+    # ------------------------------------------------------
+    # PUBLIC CONTEXT BUILDER
+    # ------------------------------------------------------
+
+    def build_context(
+        self,
+        conversation_id,
+        messages: list[Message],
+    ) -> ConversationContextResult:
+
+        conversation_uuid = self._validate_uuid(
+            conversation_id,
+            "Conversation ID",
+        )
+
+        if not isinstance(messages, list):
+
+            raise ConversationContextValidationError(
+                "Messages must be provided as a list."
+            )
+
+        candidates = self._prepare_candidates(
+            messages
+        )
+
+        selected, budget_excluded = (
+            self._select_context_messages(
+                candidates
+            )
+        )
+
+        context_messages = [
+            ConversationContextMessage(
+                role=message.role,
+                content=message.content,
+                token_estimate=message.token_estimate,
+                created_at=message.created_at,
+            )
+            for message in selected
+        ]
+
+        estimated_tokens = sum(
+            message.token_estimate
+            for message in context_messages
+        )
+
+        excluded_messages = (
+            len(messages) - len(selected)
+        )
+
+        return ConversationContextResult(
+            conversation_id=str(conversation_uuid),
+
+            messages=context_messages,
+
+            estimated_tokens=estimated_tokens,
+
+            included_messages=len(context_messages),
+
+            excluded_messages=excluded_messages,
+
+            context_truncated=excluded_messages > 0,
+
+            max_context_tokens=(
+                self.settings.max_context_tokens
+            ),
+        )
+
+    # ------------------------------------------------------
+    # DATABASE-BACKED CONTEXT RETRIEVAL
+    # ------------------------------------------------------
+
+    def get_conversation_context(
+        self,
+        db: Session,
+        conversation_id,
+        user_id,
+    ) -> ConversationContextResult:
+
+        conversation_uuid = self._validate_uuid(
+            conversation_id,
+            "Conversation ID",
+        )
+
+        user_uuid = self._validate_uuid(
+            user_id,
+            "User ID",
+        )
+
+        self._get_owned_conversation(
+            db=db,
+            conversation_id=conversation_uuid,
+            user_id=user_uuid,
+        )
+
+        messages = self._load_messages(
+            db=db,
+            conversation_id=conversation_uuid,
+        )
+
+        return self.build_context(
+            conversation_id=conversation_uuid,
+            messages=messages,
+        )
+
+
+# ==========================================================
+# SERVICE INSTANCE
+# ==========================================================
+
+conversation_context_service = (
+    ConversationContextService()
+)
+========== app\schemas\chat.py ==========
+
+from pydantic import BaseModel, Field, field_validator
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(
+        ...,
+        min_length=1,
+        max_length=5000,
+        description="The student's academic question.",
+    )
+
+    conversation_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The ID of an existing conversation, if available.",
+    )
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str) -> str:
+        value = value.strip()
+
+        if not value:
+            raise ValueError("Message cannot contain only whitespace.")
+
+        return value
+
+    @field_validator("conversation_id")
+    @classmethod
+    def validate_conversation_id(
+        cls,
+        value: str | None,
+    ) -> str | None:
+        if value is not None:
+            value = value.strip()
+
+            if not value:
+                raise ValueError(
+                    "Conversation ID cannot contain only whitespace."
+                )
+
+        return value
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    conversation_id: str | None
+    status: str
+
+

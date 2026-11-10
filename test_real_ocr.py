@@ -1,28 +1,38 @@
-from pathlib import Path
-from uuid import uuid4
-from app.core.document_config import document_settings
 
-from app.core.ocr_config import ocr_settings
-from app.services.ocr_service import process_pdf_ocr
 
-pdf_path = Path("storage/documents/scanned_test.pdf")
+@dataclass(frozen=True)
+class ChunkingSettings:
+    """Configuration for document text chunking."""
 
-if not pdf_path.is_file():
-    raise FileNotFoundError(f"PDF not found: {pdf_path.resolve()}")
+    chunk_size: int = 1000
+    chunk_overlap: int = 150
+    minimum_chunk_size: int = 100
+    preserve_page_boundaries: bool = True
 
-document_id = str(uuid4())
+    def __post_init__(self):
+        if not isinstance(self.chunk_size, int) or isinstance(self.chunk_size, bool):
+            raise ValueError("Chunk size must be an integer.")
 
-print("Starting OCR...")
+        if not isinstance(self.chunk_overlap, int) or isinstance(self.chunk_overlap, bool):
+            raise ValueError("Chunk overlap must be an integer.")
 
-result, artifact_path = process_pdf_ocr(
-    pdf_path=pdf_path,
-    document_id=document_id,
-    settings=ocr_settings,
-    storage_root=document_settings.storage_root,
-)
+        if not isinstance(self.minimum_chunk_size, int) or isinstance(self.minimum_chunk_size, bool):
+            raise ValueError("Minimumchunk size must be an integer.")
 
-print("\nOCR COMPLETED")
-print("Pages:", result.page_count)
-print("Words:", result.total_words)
-print("Quality:", result.quality_status)
-print("Artifact:", artifact_path)
+        if self.chunk_size <= 0:
+            raise ValueError("Chunk size must be greater than zero.")
+
+        if self.chunk_overlap < 0:
+            raise ValueError("Chunk overlap cannot be negative.")
+
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("Chunk overlap must be smaller than chunk size.")
+
+        if self.minimum_chunk_size <=0:
+            raise ValueError("Minimumchunk size must be greater than zero.")
+
+        if self.minimum_chunk_size > self.chunk_size:
+            raise ValueError("Minimumchunk size cannot exceed chunk size.")
+
+        if not isinstance(self.preserve_page_boundaries, bool):
+            raise ValueError("preserve_page_boundaries must be boolean.")

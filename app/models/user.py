@@ -1,4 +1,3 @@
-
 import uuid
 
 from datetime import datetime, timezone
@@ -55,6 +54,13 @@ class User(Base):
         nullable=False,
     )
 
+    # Password hash generated using Argon2id.
+    # Nullable to preserve existing user accounts.
+    password_hash: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
     # Account activation status.
     is_active: Mapped[bool] = mapped_column(
         Boolean,
@@ -106,7 +112,9 @@ class User(Base):
     )
 
     # Learning activities performed by this user.
-    learning_activities: Mapped[list["LearningActivity"]] = relationship(
+    learning_activities: Mapped[
+        list["LearningActivity"]
+    ] = relationship(
         "LearningActivity",
         back_populates="user",
         cascade="all, delete-orphan",
@@ -124,17 +132,17 @@ class User(Base):
         passive_deletes=True,
         order_by="UserResourceInteraction.occurred_at",
     )
-        # Recommendations generated for this user.
+
+    # Recommendations generated for this user.
     recommendations: Mapped[
-    list["Recommendation"]
-] = relationship(
-    "Recommendation",
-    back_populates="user",
-    cascade="all, delete-orphan",
-    passive_deletes=True,
-    order_by="Recommendation.generated_at",
-)
-    
+        list["Recommendation"]
+    ] = relationship(
+        "Recommendation",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="Recommendation.generated_at",
+    )
 
     def __repr__(self) -> str:
         return (
@@ -142,4 +150,3 @@ class User(Base):
             f"email='{self.email}', "
             f"is_active={self.is_active})>"
         )
-

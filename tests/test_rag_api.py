@@ -100,8 +100,12 @@ def test_rag_endpoint_requires_authentication():
             },
         )
 
-    assert response.status_code == 501
+    assert response.status_code == 401
 
+    assert (
+        response.headers["www-authenticate"]
+        == "Bearer"
+    )
 
 # ============================================================
 # SUCCESSFUL REQUEST

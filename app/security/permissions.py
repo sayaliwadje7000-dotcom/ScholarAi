@@ -1,0 +1,66 @@
+﻿"""
+ScholarAI Role-Based Authorization Dependencies.
+
+Roles are loaded from the database on every request.
+This ensures role revocation takes effect immediately.
+"""
+
+from fastapi import Depends, HTTPException, status
+
+from sqlalchemy.orm import Session
+
+from app.database.session import get_db
+
+from app.api.dependencies import get_current_user
+
+from app.models.user import User
+
+from app.services.role_service import role_service
+
+from app.security.roles import normalize_role
+
+
+def require_roles(*allowed_roles: str):
+
+    normalized_roles = {
+        normalize_role(role)
+        for role in allowed_roles
+    }
+
+    def role_dependency(
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+
+        user_roles = role_service.get_user_roles(
+            db=db,
+            user_id=current_user.id,
+        )
+
+        if not normalized_roles.intersection(user_roles):
+
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to access this resource.",
+            )
+
+        return current_user
+
+    return role_dependency
+
+
+require_student = require_roles("student")
+
+require_educator = require_roles("educator")
+
+require_admin = require_roles("admin")
+
+require_educator_or_admin = require_roles(
+    "educator",
+    "admin",
+)
+
+
+# Phase 18.8: general student-facing routes; administrators retain operational access.
+require_student_or_admin = require_roles("student", "admin")
+

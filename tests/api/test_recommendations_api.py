@@ -24,7 +24,10 @@ def authenticated_client():
     with TestClient(app) as client:
         yield client, user
 
-    app.dependency_overrides.clear()
+    app.dependency_overrides.pop(
+        get_current_user,
+        None,
+    )
 
 
 def test_recommendation_generation_requires_valid_request(
@@ -43,23 +46,36 @@ def test_recommendation_generation_requires_valid_request(
 
 
 def test_recommendation_generation_requires_authentication():
+
     response = TestClient(app).post(
         "/api/v1/recommendations/generate",
         json={},
     )
 
-    assert response.status_code == 501
+    assert response.status_code == 401
+
+    assert (
+        response.headers["www-authenticate"]
+        == "Bearer"
+    )
 
 
 def test_recommendation_history_requires_authentication():
+
     response = TestClient(app).get(
         "/api/v1/recommendations/"
     )
 
-    assert response.status_code == 501
+    assert response.status_code == 401
+
+    assert (
+        response.headers["www-authenticate"]
+        == "Bearer"
+    )
 
 
 def test_recommendation_feedback_requires_authentication():
+
     response = TestClient(app).post(
         f"/api/v1/recommendations/{uuid4()}/feedback",
         json={
@@ -67,4 +83,9 @@ def test_recommendation_feedback_requires_authentication():
         },
     )
 
-    assert response.status_code == 501
+    assert response.status_code == 401
+
+    assert (
+        response.headers["www-authenticate"]
+        == "Bearer"
+    )

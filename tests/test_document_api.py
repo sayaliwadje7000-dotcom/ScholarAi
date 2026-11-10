@@ -63,8 +63,12 @@ def test_document_endpoints_require_authentication():
             "/api/v1/documents"
         )
 
-    assert response.status_code == 501
+    assert response.status_code == 401
 
+    assert (
+        response.headers["www-authenticate"]
+        == "Bearer"
+    )
 
 def test_list_documents(
     client,

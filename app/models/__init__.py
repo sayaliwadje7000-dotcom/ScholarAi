@@ -14,6 +14,7 @@ from app.models.document_chunk import DocumentChunk
 from app.models.chunk_embedding import ChunkEmbedding
 from app.models.resource_embedding import ResourceEmbedding
 from app.models.opportunity import Opportunity
+from app.models.user_session import UserSession
 __all__ = [
     "User",
     "Conversation",
@@ -30,3 +31,6 @@ __all__ = [
     "DocumentChunk",
     "ChunkEmbedding",
 ]
+from app.models.user_session import UserSession
+
+from app.models.user_role import UserRole

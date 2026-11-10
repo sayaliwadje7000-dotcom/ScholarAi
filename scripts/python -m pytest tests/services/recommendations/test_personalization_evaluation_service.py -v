@@ -1,0 +1,267 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+REQUIRED_FILES = {
+    "16.1": [
+        "docs/phase-16-1-personalization-architecture-audit.md",
+    ],
+    "16.2": [
+        "app/schemas/learning_profile.py",
+        "app/services/learning_profile_service.py",
+        "app/api/learning_profile.py",
+        "tests/test_learning_profile_schemas.py",
+        "tests/test_learning_profile_service.py",
+    ],
+    "16.3": [
+        "app/schemas/behavioral_signals.py",
+        "app/services/behavioral_signal_service.py",
+        "app/api/learning_activities.py",
+    ],
+    "16.4": [
+        "app/services/recommendations/feedback_intelligence_service.py",
+        "app/services/recommendations/feedback_signal_adapter.py",
+    ],
+    "16.5": [
+        "app/schemas/personalized_learning_context.py",
+        "app/services/recommendations/personalized_context_engine.py",
+    ],
+    "16.6": [
+        "app/schemas/adaptive_recommendations.py",
+        "app/services/recommendations/adaptive_policy_engine.py",
+        "app/services/recommendations/adaptive_hybrid_service.py",
+        "app/services/recommendations/hybrid_executor.py",
+    ],
+    "16.7": [
+        "app/schemas/sparse_data.py",
+        "app/services/recommendations/sparse_data_assessor.py",
+        "app/services/recommendations/cold_start_strategy.py",
+        "app/services/recommendations/exploration_allocator.py",
+        "app/services/recommendations/sparse_data_intelligence.py",
+    ],
+    "16.8": [
+        "app/schemas/personalization_controls.py",
+        "app/services/personalization_controls_service.py",
+        "app/api/personalization_controls.py",
+        "tests/schemas/test_personalization_controls.py",
+        "tests/services/test_personalization_controls_service.py",
+        "tests/api/test_personalization_controls.py",
+    ],
+    "16.9": [
+        "app/schemas/personalization_evaluation.py",
+        "app/services/recommendations/personalization_evaluation_service.py",
+        "tests/schemas/test_personalization_evaluation.py",
+        "tests/services/recommendations/test_personalization_evaluation_service.py",
+    ],
+}
+
+
+IMPORTANT_INTEGRATION_GAPS = [
+    {
+        "id": "P16-INT-001",
+        "area": "Adaptive ranking",
+        "description": (
+            "Phase 16.6 selects an adaptive policy, but the policy "
+            "weights are not yet proven to affect Phase 15 ranking."
+        ),
+        "status": "REQUIRES_INTEGRATION",
+    },
+    {
+        "id": "P16-INT-002",
+        "area": "Exploration allocation",
+        "description": (
+            "Phase 16.7 calculates exploration ratios, but actual "
+            "candidate allocation in Phase 15 is not yet proven."
+        ),
+        "status": "REQUIRES_INTEGRATION",
+    },
+    {
+        "id": "P16-INT-003",
+        "area": "Authentication",
+        "description": (
+            "Personalization APIs depend on the current-user "
+            "dependency. Full authentication is deferred to Phase 18."
+        ),
+        "status": "DEFERRED_TO_PHASE_18",
+    },
+    {
+        "id": "P16-INT-004",
+        "area": "Evaluation dataset",
+        "description": (
+            "Phase 16.9 requires representative, explicitly labelled "
+            "evaluation data before production-quality claims can be made."
+        ),
+        "status": "REQUIRES_DATA",
+    },
+    {
+        "id": "P16-INT-005",
+        "area": "Evaluation integration",
+        "description": (
+            "Phase 16.9 provides an offline evaluation service. "
+            "Production evaluation API and scheduled evaluation "
+            "workflows are not established."
+        ),
+        "status": "NOT_IMPLEMENTED",
+    },
+]
+
+
+def inspect_required_files() -> dict:
+    report = {}
+
+    for phase, files in REQUIRED_FILES.items():
+
+        present = []
+        missing = []
+
+        for relative_path in files:
+
+            absolute_path = PROJECT_ROOT / relative_path
+
+            if absolute_path.is_file():
+                present.append(relative_path)
+            else:
+                missing.append(relative_path)
+
+        report[phase] = {
+            "expected_files": len(files),
+            "present_files": len(present),
+            "missing_files": missing,
+            "status": (
+                "FILES_PRESENT"
+                if not missing
+                else "FILES_MISSING"
+            ),
+        }
+
+    return report
+
+
+def build_audit_report() -> dict:
+
+    phase_results = inspect_required_files()
+
+    expected_count = sum(
+        item["expected_files"]
+        for item in phase_results.values()
+    )
+
+    present_count = sum(
+        item["present_files"]
+        for item in phase_results.values()
+    )
+
+    missing_count = expected_count - present_count
+
+    return {
+        "project": "ScholarAI",
+        "phase": "16",
+        "phase_title": (
+            "Personalized Learning and Adaptive Recommendations"
+        ),
+        "audit_generated_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "repository_root": str(PROJECT_ROOT),
+        "file_inventory": phase_results,
+        "summary": {
+            "expected_files": expected_count,
+            "present_files": present_count,
+            "missing_files": missing_count,
+            "all_expected_files_present": (
+                missing_count == 0
+            ),
+        },
+        "integration_gaps": IMPORTANT_INTEGRATION_GAPS,
+        "completion_status": (
+            "IMPLEMENTATION_INVENTORY_COMPLETE"
+            if missing_count == 0
+            else "IMPLEMENTATION_INVENTORY_INCOMPLETE"
+        ),
+        "verification_warning": (
+            "File presence does not prove correctness, "
+            "runtime compatibility, test success, or production readiness."
+        ),
+    }
+
+
+def main():
+
+    report = build_audit_report()
+
+    output_directory = PROJECT_ROOT / "artifacts"
+
+    output_directory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    output_file = (
+        output_directory
+        / "phase_16_10_integration_audit.json"
+    )
+
+    output_file.write_text(
+        json.dumps(
+            report,
+            indent=4,
+        ),
+        encoding="utf-8",
+    )
+
+    print("\nScholarAI Phase 16 Integration Audit")
+    print("=" * 50)
+
+    for phase, result in report["file_inventory"].items():
+
+        print(
+            f"{phase}: {result['status']} "
+            f"({result['present_files']}/"
+            f"{result['expected_files']})"
+        )
+
+        for missing_file in result["missing_files"]:
+            print(f"  MISSING: {missing_file}")
+
+    print("\nSummary")
+    print("-" * 50)
+
+    print(
+        f"Expected files: "
+        f"{report['summary']['expected_files']}"
+    )
+
+    print(
+        f"Present files: "
+        f"{report['summary']['present_files']}"
+    )
+
+    print(
+        f"Missing files: "
+        f"{report['summary']['missing_files']}"
+    )
+
+    print("\nIntegration gaps")
+
+    for gap in report["integration_gaps"]:
+        print(
+            f"{gap['id']} | {gap['area']} | "
+            f"{gap['status']}"
+        )
+
+    print(f"\nReport saved to: {output_file}")
+
+    print(
+        "\nNOTE: This audit checks file presence, "
+        "not runtime correctness."
+    )
+
+
+if __name__ == "__main__":
+    main()

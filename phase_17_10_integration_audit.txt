@@ -1,0 +1,1891 @@
+﻿
+========== app\main.py ==========
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+from app.api.hybrid_recommendations import router as hybrid_recommendations_router
+from app.api.chat import router as chat_router
+from app.api.documents import router as documents_router
+from app.api.retrieval import router as retrieval_router
+from app.api.rag import router as rag_router
+from app.api.recommendations import router as recommendations_router
+
+from app.api.content_recommendations import (
+    router as content_recommendations_router,
+)
+
+from app.api.resource_recommendations import (
+    router as resource_recommendations_router,
+)
+
+from app.core.config import settings
+
+from app.database.session import engine
+
+from app.integrations.opportunities.registry import (
+    OpportunityProviderRegistry,
+)
+from app.api.opportunities import (
+    router as opportunities_router,
+)
+from app.api.ml_recommendations import (
+    router as ml_recommendations_router,
+)
+from app.api.learning_profile import (
+    router as learning_profile_router,
+)
+from app.api.learning_activities import (
+    router as learning_activities_router,
+)
+from app.api.personalization_controls import (
+    router as personalization_controls_router,
+)
+
+# ============================================================
+# APPLICATION LIFECYCLE
+# ============================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Manages application startup and shutdown resources.
+    """
+
+    opportunity_registry = OpportunityProviderRegistry()
+
+    app.state.opportunity_provider_registry = (
+        opportunity_registry
+    )
+
+    try:
+        yield
+
+    finally:
+        await opportunity_registry.close()
+
+
+# ============================================================
+# FASTAPI APPLICATION
+# ============================================================
+
+app = FastAPI(
+    title=settings.APP_NAME,
+    description="An AI-powered academic learning platform",
+    version=settings.APP_VERSION,
+    lifespan=lifespan,
+)
+
+
+# ============================================================
+# CORS CONFIGURATION
+# ============================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        settings.FRONTEND_ORIGIN,
+        "http://localhost:5500",
+    ],
+    allow_credentials=False,
+    allow_methods=[
+        "GET",
+        "POST",
+        "OPTIONS",
+    ],
+    allow_headers=[
+        "Content-Type",
+        "Authorization",
+    ],
+)
+
+
+# ============================================================
+# APPLICATION HEALTH
+# ============================================================
+
+@app.get("/")
+def home():
+    return {
+        "application": "ScholarAI",
+        "message": "Welcome to ScholarAI!",
+        "status": "running",
+    }
+
+
+@app.get("/health")
+def health_check():
+    return {
+        "status": "healthy",
+    }
+
+
+@app.get("/health/database")
+def database_health_check():
+    """
+    Checks whether PostgreSQL is reachable.
+    """
+
+    try:
+
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+
+        return {
+            "status": "healthy",
+            "database": "connected",
+        }
+
+    except SQLAlchemyError:
+
+        return {
+            "status": "unhealthy",
+            "database": "disconnected",
+        }
+
+
+# ============================================================
+# API ROUTERS
+# ============================================================
+
+app.include_router(
+    chat_router,
+    prefix="/api/v1",
+    tags=["Chat"],
+)
+
+app.include_router(
+    documents_router,
+    prefix="/api/v1/documents",
+    tags=["Documents"],
+)
+
+app.include_router(
+    retrieval_router,
+    prefix="/api/v1/retrieval",
+    tags=["Retrieval"],
+)
+
+app.include_router(
+    rag_router,
+    prefix="/api/v1/rag",
+    tags=["RAG"],
+)
+
+app.include_router(
+    recommendations_router,
+    prefix="/api/v1/recommendations",
+    tags=["Recommendations"],
+)
+
+app.include_router(
+    content_recommendations_router,
+)
+
+app.include_router(
+    resource_recommendations_router,
+    prefix="/api/v1",
+)
+app.include_router(
+    opportunities_router,
+    prefix="/api/v1/opportunities",
+    tags=["Opportunities"],
+)
+app.include_router(
+    ml_recommendations_router,
+    prefix="/api/v1/recommendations",
+)
+app.include_router(
+    hybrid_recommendations_router,
+    prefix="/api/v1",
+)
+app.include_router(
+    learning_profile_router,
+    prefix="/api/v1/learning-profile",
+    tags=["Learning Profile"],
+)
+app.include_router(
+    learning_activities_router,
+    prefix="/api/v1/learning-activities",
+    tags=["Learning Activities"],
+)
+app.include_router(
+    personalization_controls_router,
+    prefix="/api/v1/personalization-controls",
+    tags=["Personalization Controls"],
+)
+
+========== app\api\rag.py ==========
+import logging
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    status,
+)
+
+from sqlalchemy.orm import Session
+
+from app.api.dependencies import get_current_user
+from app.api.rag_dependencies import get_rag_service
+
+from app.database.session import get_db
+
+from app.models.user import User
+
+from app.schemas.retrieval import RetrievalRequest
+from app.schemas.rag import RAGAskResponse
+
+from app.services.rag.rag_service import RAGService
+
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+@router.post(
+    "/ask",
+    response_model=RAGAskResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Ask a question using uploaded documents",
+    description=(
+        "Retrieves relevant document chunks, generates an "
+        "evidence-grounded answer, extracts citations, and "
+        "returns grounding verification metadata."
+    ),
+)
+async def ask_rag(
+    request: RetrievalRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    rag_service: RAGService = Depends(get_rag_service),
+) -> RAGAskResponse:
+    """
+    Execute the complete RAG pipeline for an authenticated user.
+    """
+
+    try:
+
+        result = await rag_service.ask(
+            db=db,
+            user_id=current_user.id,
+            request=request,
+        )
+
+        return RAGAskResponse.model_validate(result)
+
+    except HTTPException:
+        raise
+
+    except RuntimeError as exc:
+
+        logger.exception(
+            "RAG generation failed for user %s.",
+            current_user.id,
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The RAG service is temporarily unavailable.",
+        ) from exc
+
+========== app\api\rag_dependencies.py ==========
+from functools import lru_cache
+
+from app.services.embeddings.embedding_service import EmbeddingService
+
+from app.services.retrieval_service import RetrievalService
+
+from app.services.rag.rag_service import RAGService
+
+
+@lru_cache(maxsize=1)
+def get_rag_service() -> RAGService:
+    """
+    Construct and reuse the RAG service and its dependencies.
+
+    The embedding provider is initialized lazily when the
+    first RAG request requires the service.
+    """
+
+    embedding_service = EmbeddingService()
+
+    retrieval_service = RetrievalService(
+        embedding_service=embedding_service,
+    )
+
+    return RAGService(
+        retrieval_service=retrieval_service,
+    )
+
+========== app\database\session.py ==========
+
+from collections.abc import Generator
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.core.config import settings
+
+
+if not settings.DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is missing. Check your .env configuration."
+    )
+
+
+engine = create_engine(
+    settings.DATABASE_URL,
+    pool_pre_ping=True,
+    pool_recycle=1800,
+)
+
+
+SessionLocal = sessionmaker(
+    bind=engine,
+    class_=Session,
+    autoflush=False,
+    autocommit=False,
+    expire_on_commit=False,
+)
+
+
+def get_db() -> Generator[Session, None, None]:
+    """
+    Provides a database session to API endpoints.
+
+    Automatically rolls back unfinished transactions on errors
+    and closes the session after use.
+    """
+    db = SessionLocal()
+
+    try:
+        yield db
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        db.close()
+
+
+
+========== app\core\llm_provider_config.py ==========
+import os
+
+from dataclasses import dataclass
+
+
+def _read_provider_name(
+    name: str,
+    default: str,
+) -> str:
+
+    value = os.getenv(name, default).strip().lower()
+
+    if not value:
+        raise ValueError(
+            f"{name} cannot be empty."
+        )
+
+    return value
+
+
+def _read_fallback_providers() -> tuple[str, ...]:
+
+    raw_value = os.getenv(
+        "SCHOLARAI_LLM_FALLBACK_PROVIDERS",
+        "",
+    )
+
+    providers = tuple(
+        item.strip().lower()
+        for item in raw_value.split(",")
+        if item.strip()
+    )
+
+    if len(providers) != len(set(providers)):
+        raise ValueError(
+            "Fallback provider names must be unique."
+        )
+
+    return providers
+
+
+@dataclass(frozen=True)
+class LLMProviderSettings:
+
+    primary_provider: str
+
+    fallback_providers: tuple[str, ...]
+
+    def __post_init__(self):
+
+        configured = (
+            self.primary_provider,
+            *self.fallback_providers,
+        )
+
+        if len(configured) != len(set(configured)):
+
+            raise ValueError(
+                "Primary and fallback providers must be unique."
+            )
+
+
+def load_llm_provider_settings() -> LLMProviderSettings:
+
+    return LLMProviderSettings(
+        primary_provider=_read_provider_name(
+            "SCHOLARAI_LLM_PRIMARY_PROVIDER",
+            "gemini",
+        ),
+        fallback_providers=_read_fallback_providers(),
+    )
+
+
+llm_provider_settings = load_llm_provider_settings()
+
+========== app\schemas\llm_provider.py ==========
+from enum import Enum
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class LLMProviderStatus(str, Enum):
+
+    SUCCESS = "success"
+
+    FAILED = "failed"
+
+    FALLBACK_SUCCESS = "fallback_success"
+
+    ALL_PROVIDERS_FAILED = "all_providers_failed"
+
+
+class LLMProviderAttempt(BaseModel):
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+
+    success: bool
+
+    retryable: bool
+
+    execution_time_ms: float = Field(
+        ge=0,
+    )
+
+    error_code: str | None = None
+
+
+class LLMGenerationResult(BaseModel):
+
+    model_config = ConfigDict(extra="forbid")
+
+    response: str
+
+    provider: str
+
+    status: LLMProviderStatus
+
+    attempts: list[LLMProviderAttempt]
+
+    total_execution_time_ms: float = Field(
+        ge=0,
+    )
+
+========== app\services\llm_providers\base.py ==========
+from abc import ABC, abstractmethod
+
+
+class BaseLLMProvider(ABC):
+
+    name: str
+
+    @abstractmethod
+    async def generate(
+        self,
+        prompt: str,
+    ) -> str:
+        """
+        Generate a text response.
+
+        Every provider must return a non-empty string.
+
+        Provider-specific SDK details must remain inside
+        the provider implementation.
+        """
+
+        raise NotImplementedError
+
+========== app\services\llm_providers\gemini_provider.py ==========
+import logging
+
+from app.services.llm_providers.base import (
+    BaseLLMProvider,
+)
+
+from app.services.llm_providers.exceptions import (
+    LLMProviderAuthenticationError,
+    LLMProviderConfigurationError,
+    LLMProviderExecutionError,
+    LLMProviderUnavailableError,
+)
+
+from app.services.llm_service import (
+    generate_llm_response,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+class GeminiProvider(BaseLLMProvider):
+
+    name = "gemini"
+
+    def __init__(
+        self,
+        generator=None,
+    ):
+
+        self.generator = (
+            generator or generate_llm_response
+        )
+
+    async def generate(
+        self,
+        prompt: str,
+    ) -> str:
+
+        if not isinstance(prompt, str) or not prompt.strip():
+
+            raise ValueError(
+                "Prompt cannot be empty."
+            )
+
+        try:
+
+            response = await self.generator(
+                prompt.strip()
+            )
+
+        except RuntimeError as exc:
+
+            message = str(exc).lower()
+
+            if "missing" in message and "api_key" in message:
+
+                raise LLMProviderConfigurationError(
+                    "Gemini API configuration is missing."
+                ) from exc
+
+            if (
+                "authentication failed" in message
+                or "access was denied" in message
+            ):
+
+                raise LLMProviderAuthenticationError(
+                    "Gemini authentication failed."
+                ) from exc
+
+            if (
+                "temporarily unavailable" in message
+                or "usage limit reached" in message
+            ):
+
+                raise LLMProviderUnavailableError(
+                    "Gemini is temporarily unavailable."
+                ) from exc
+
+            raise LLMProviderExecutionError(
+                "Gemini response generation failed."
+            ) from exc
+
+        except (
+            TimeoutError,
+            ConnectionError,
+        ) as exc:
+
+            raise LLMProviderUnavailableError(
+                "Gemini connection or request timed out."
+            ) from exc
+
+        except Exception as exc:
+
+            logger.exception(
+                "Unexpected Gemini adapter failure."
+            )
+
+            raise LLMProviderExecutionError(
+                "Gemini execution failed."
+            ) from exc
+
+        if not isinstance(response, str) or not response.strip():
+
+            raise LLMProviderExecutionError(
+                "Gemini returned an invalid response."
+            )
+
+        return response.strip()
+
+========== app\services\llm_providers\provider_registry.py ==========
+from app.services.llm_providers.base import (
+    BaseLLMProvider,
+)
+
+from app.services.llm_providers.exceptions import (
+    LLMProviderConfigurationError,
+)
+
+
+class LLMProviderRegistry:
+
+    def __init__(self):
+
+        self._providers: dict[
+            str,
+            BaseLLMProvider,
+        ] = {}
+
+    def register(
+        self,
+        provider: BaseLLMProvider,
+    ) -> None:
+
+        name = getattr(
+            provider,
+            "name",
+            None,
+        )
+
+        if not isinstance(name, str) or not name.strip():
+
+            raise LLMProviderConfigurationError(
+                "Provider must have a valid name."
+            )
+
+        name = name.strip().lower()
+
+        if name in self._providers:
+
+            raise LLMProviderConfigurationError(
+                f"Provider '{name}' is already registered."
+            )
+
+        if not isinstance(
+            provider,
+            BaseLLMProvider,
+        ):
+
+            raise LLMProviderConfigurationError(
+                "Provider must implement BaseLLMProvider."
+            )
+
+        self._providers[name] = provider
+
+    def get(
+        self,
+        name: str,
+    ) -> BaseLLMProvider:
+
+        provider = self._providers.get(
+            name.strip().lower()
+        )
+
+        if provider is None:
+
+            raise LLMProviderConfigurationError(
+                f"LLM provider '{name}' is not registered."
+            )
+
+        return provider
+
+    def contains(
+        self,
+        name: str,
+    ) -> bool:
+
+        return name.strip().lower() in self._providers
+
+    def list_providers(self) -> list[str]:
+
+        return list(
+            self._providers.keys()
+        )
+
+    def clear(self) -> None:
+
+        self._providers.clear()
+
+
+llm_provider_registry = LLMProviderRegistry()
+
+========== app\services\llm_providers\exceptions.py ==========
+class LLMProviderError(Exception):
+    """Base exception for LLM provider operations."""
+
+
+class LLMProviderConfigurationError(LLMProviderError):
+    """Provider configuration is invalid or incomplete."""
+
+
+class LLMProviderExecutionError(LLMProviderError):
+    """Provider execution failed."""
+
+
+class LLMProviderUnavailableError(LLMProviderError):
+    """Provider is temporarily unavailable."""
+
+
+class LLMProviderAuthenticationError(LLMProviderError):
+    """Provider authentication failed."""
+
+
+class LLMAllProvidersFailedError(LLMProviderError):
+    """All configured providers failed."""
+
+    def __init__(
+        self,
+        message: str,
+        attempts: list,
+    ):
+
+        super().__init__(message)
+
+        self.attempts = attempts
+
+========== app\schemas\response_intelligence.py ==========
+from enum import Enum
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+)
+
+
+class ResponseFormat(str, Enum):
+
+    PLAIN_TEXT = "plain_text"
+
+    ACADEMIC = "academic"
+
+    SUMMARY = "summary"
+
+    COMPARISON = "comparison"
+
+    STEP_BY_STEP = "step_by_step"
+
+
+class ResponseValidationStatus(str, Enum):
+
+    VALID = "valid"
+
+    INVALID = "invalid"
+
+    PARTIALLY_VALID = "partially_valid"
+
+
+class AcademicStructuredResponse(BaseModel):
+
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    answer: str = Field(
+        min_length=1,
+        max_length=30000,
+    )
+
+    key_points: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+
+    examples: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+    )
+
+    caveats: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+    )
+
+    conclusion: str | None = Field(
+        default=None,
+        max_length=5000,
+    )
+
+    @field_validator(
+        "answer",
+        "conclusion",
+    )
+    @classmethod
+    def validate_optional_text(cls, value):
+
+        if value is not None and not value.strip():
+
+            raise ValueError(
+                "Text fields cannot contain only whitespace."
+            )
+
+        return value
+
+    @field_validator(
+        "key_points",
+        "examples",
+        "caveats",
+    )
+    @classmethod
+    def validate_text_lists(cls, values):
+
+        cleaned = []
+
+        for item in values:
+
+            item = item.strip()
+
+            if not item:
+
+                raise ValueError(
+                    "List items cannot be empty."
+                )
+
+            cleaned.append(item)
+
+        return cleaned
+
+
+class ResponseIntelligenceRequest(BaseModel):
+
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    response: str = Field(
+        min_length=1,
+        max_length=50000,
+    )
+
+    response_format: ResponseFormat = (
+        ResponseFormat.PLAIN_TEXT
+    )
+
+    validate_safety: bool = True
+
+    @field_validator("response")
+    @classmethod
+    def validate_response(cls, value):
+
+        if not value.strip():
+
+            raise ValueError(
+                "Generated response cannot be empty."
+            )
+
+        return value
+
+
+class ResponseIntelligenceResult(BaseModel):
+
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+
+    response: str
+
+    response_format: ResponseFormat
+
+    validation_status: ResponseValidationStatus
+
+    structured_response: AcademicStructuredResponse | None = None
+
+    quality_issues: list[str] = Field(
+        default_factory=list,
+    )
+
+    safety_validated: bool
+
+    character_count: int = Field(
+        ge=0,
+    )
+
+    word_count: int = Field(
+        ge=0,
+    )
+
+========== app\services\response_intelligence\response_parser.py ==========
+import json
+import re
+
+from pydantic import ValidationError
+
+from app.schemas.response_intelligence import (
+    AcademicStructuredResponse,
+)
+
+from app.services.response_intelligence.exceptions import (
+    ResponseParsingError,
+    ResponseValidationError,
+)
+
+
+class ResponseParser:
+
+    @staticmethod
+    def _extract_json(response: str) -> str:
+
+        response = response.strip()
+
+        fenced_match = re.fullmatch(
+            r"```(?:json)?\s*(.*?)\s*```",
+            response,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        if fenced_match:
+
+            response = fenced_match.group(1).strip()
+
+        if not response:
+
+            raise ResponseParsingError(
+                "Structured response is empty."
+            )
+
+        return response
+
+    def parse(
+        self,
+        response: str,
+    ) -> AcademicStructuredResponse:
+
+        if not isinstance(response, str):
+
+            raise ResponseParsingError(
+                "Response must be a string."
+            )
+
+        content = self._extract_json(response)
+
+        try:
+
+            data = json.loads(content)
+
+        except json.JSONDecodeError as exc:
+
+            raise ResponseParsingError(
+                "Generated response contains invalid JSON."
+            ) from exc
+
+        if not isinstance(data, dict):
+
+            raise ResponseParsingError(
+                "Structured response must be a JSON object."
+            )
+
+        try:
+
+            return AcademicStructuredResponse.model_validate(
+                data
+            )
+
+        except ValidationError as exc:
+
+            raise ResponseValidationError(
+                "Generated response does not match "
+                "the academic response schema."
+            ) from exc
+
+========== app\services\response_intelligence\response_validator.py ==========
+from app.schemas.response_intelligence import (
+    ResponseFormat,
+)
+
+from app.services.response_intelligence.exceptions import (
+    ResponseQualityError,
+)
+
+
+class ResponseValidator:
+
+    MINIMUM_RESPONSE_LENGTH = 2
+
+    MAXIMUM_RESPONSE_LENGTH = 50000
+
+    COMPARISON_MARKERS = (
+        "difference",
+        "differ",
+        "different",
+        "similarity",
+        "similarities",
+        "similar",
+        "whereas",
+        "while",
+        "compared with",
+        "compared to",
+        "in contrast",
+        "on the other hand",
+        "|",
+    )
+
+    STEP_MARKERS = (
+        "step 1",
+        "step 2",
+        "1.",
+        "first",
+        "firstly",
+    )
+
+    def validate(
+        self,
+        response: str,
+        response_format: ResponseFormat,
+    ) -> list[str]:
+
+        # STEP 1: BASIC INPUT VALIDATION
+
+        if not isinstance(response, str):
+
+            raise ResponseQualityError(
+                "Response must be a string."
+            )
+
+        if not response.strip():
+
+            raise ResponseQualityError(
+                "Generated response is empty."
+            )
+
+        if len(response) < self.MINIMUM_RESPONSE_LENGTH:
+
+            raise ResponseQualityError(
+                "Generated response is too short."
+            )
+
+        if len(response) > self.MAXIMUM_RESPONSE_LENGTH:
+
+            raise ResponseQualityError(
+                "Generated response exceeds the maximum length."
+            )
+
+        issues = []
+
+        normalized_response = response.lower()
+
+        # STEP 2: MARKDOWN CODE FENCE VALIDATION
+
+        if response.count("```") % 2 != 0:
+
+            issues.append(
+                "Response contains an unmatched code fence."
+            )
+
+        # STEP 3: COMPARISON STRUCTURE VALIDATION
+
+        if response_format == ResponseFormat.COMPARISON:
+
+            has_comparison_content = any(
+                marker in normalized_response
+                for marker in self.COMPARISON_MARKERS
+            )
+
+            if not has_comparison_content:
+
+                issues.append(
+                    "Comparison response does not contain "
+                    "an identifiable comparison structure."
+                )
+
+        # STEP 4: STEP-BY-STEP STRUCTURE VALIDATION
+
+        if response_format == ResponseFormat.STEP_BY_STEP:
+
+            has_steps = any(
+                marker in normalized_response
+                for marker in self.STEP_MARKERS
+            )
+
+            if not has_steps:
+
+                issues.append(
+                    "Step-by-step response does not contain "
+                    "an identifiable sequence."
+                )
+
+        return issues
+
+========== tests\test_llm_service.py ==========
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from app.services import llm_service
+from app.services.llm_service import (
+    GEMINI_MODEL,
+    SCHOLARAI_SYSTEM_PROMPT,
+    generate_llm_response,
+)
+
+
+# ============================================================
+# PROMPT ENGINEERING TESTS
+# ============================================================
+
+def test_system_prompt_identifies_scholarai_as_academic_tutor():
+    assert "ScholarAI" in SCHOLARAI_SYSTEM_PROMPT
+    assert "academic tutor" in SCHOLARAI_SYSTEM_PROMPT
+
+
+def test_system_prompt_covers_comparison_questions():
+    assert "COMPARISON QUESTIONS" in SCHOLARAI_SYSTEM_PROMPT
+    assert "Markdown table" in SCHOLARAI_SYSTEM_PROMPT
+
+
+def test_system_prompt_covers_problem_solving():
+    assert "PROBLEM SOLVING" in SCHOLARAI_SYSTEM_PROMPT
+    assert "step by step" in SCHOLARAI_SYSTEM_PROMPT
+
+
+def test_system_prompt_covers_engineering_and_computer_science():
+    assert "ENGINEERING AND COMPUTER SCIENCE" in SCHOLARAI_SYSTEM_PROMPT
+    assert "time and space complexity" in SCHOLARAI_SYSTEM_PROMPT
+
+
+def test_system_prompt_discourages_fabricated_information():
+    assert "Never invent facts" in SCHOLARAI_SYSTEM_PROMPT
+    assert "Acknowledge uncertainty" in SCHOLARAI_SYSTEM_PROMPT
+
+
+# ============================================================
+# INPUT VALIDATION TESTS
+# ============================================================
+
+@pytest.mark.parametrize(
+    "message",
+    ["", " ", "\n\t"],
+)
+@pytest.mark.asyncio
+async def test_rejects_empty_messages(message):
+    with pytest.raises(ValueError, match="Message cannot be empty"):
+        await generate_llm_response(message)
+
+
+@pytest.mark.asyncio
+async def test_rejects_invalid_message_type():
+    with pytest.raises(ValueError, match="Message cannot be empty"):
+        await generate_llm_response(None)
+
+
+# ============================================================
+# MOCKED GEMINI CLIENT
+# ============================================================
+
+def create_mock_gemini_client(answer="Academic answer."):
+    mock_response = MagicMock()
+    mock_response.text = answer
+
+    mock_client = MagicMock()
+    mock_client.aio.models.generate_content = AsyncMock(
+        return_value=mock_response
+    )
+
+    return mock_client, mock_response
+
+
+# ============================================================
+# GEMINI RESPONSE TESTS
+# ============================================================
+
+@pytest.mark.asyncio
+async def test_generate_llm_response_returns_answer():
+    mock_client, _ = create_mock_gemini_client(
+        "Machine learning learns patterns from data."
+    )
+
+    with patch(
+        "app.services.llm_service._create_gemini_client",
+        return_value=mock_client,
+    ):
+        answer = await generate_llm_response(
+            "Explain machine learning."
+        )
+
+    assert answer == "Machine learning learns patterns from data."
+
+
+@pytest.mark.asyncio
+async def test_generate_llm_response_strips_whitespace():
+    mock_client, _ = create_mock_gemini_client(
+        "  Academic answer.  \n"
+    )
+
+    with patch(
+        "app.services.llm_service._create_gemini_client",
+        return_value=mock_client,
+    ):
+        answer = await generate_llm_response(
+            "Explain a concept."
+        )
+
+    assert answer == "Academic answer."
+
+
+@pytest.mark.asyncio
+async def test_request_uses_configured_model_and_prompt():
+    mock_client, _ = create_mock_gemini_client()
+
+    with patch(
+        "app.services.llm_service._create_gemini_client",
+        return_value=mock_client,
+    ):
+        await generate_llm_response(
+            "Compare machine learning and deep learning."
+        )
+
+    mock_client.aio.models.generate_content.assert_awaited_once()
+
+    call_arguments = (
+        mock_client.aio.models.generate_content.await_args
+    )
+
+    assert call_arguments.kwargs["model"] == GEMINI_MODEL
+
+    assert (
+        call_arguments.kwargs["contents"]
+        == "Compare machine learning and deep learning."
+    )
+
+    config = call_arguments.kwargs["config"]
+
+    assert config.system_instruction == SCHOLARAI_SYSTEM_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_generate_llm_response_rejects_empty_answer():
+    mock_client, _ = create_mock_gemini_client("   ")
+
+    with patch(
+        "app.services.llm_service._create_gemini_client",
+        return_value=mock_client,
+    ):
+        with pytest.raises(RuntimeError, match="empty response"):
+            await generate_llm_response(
+                "Explain machine learning."
+            )
+
+
+@pytest.mark.asyncio
+async def test_generate_llm_response_rejects_invalid_response():
+    mock_client, mock_response = create_mock_gemini_client()
+    mock_response.text = None
+
+    with patch(
+        "app.services.llm_service._create_gemini_client",
+        return_value=mock_client,
+    ):
+        with pytest.raises(RuntimeError, match="invalid response"):
+            await generate_llm_response(
+                "Explain machine learning."
+            )
+
+
+@pytest.mark.asyncio
+async def test_generate_llm_response_rejects_incomplete_answer():
+    mock_client, _ = create_mock_gemini_client("A")
+
+    with patch(
+        "app.services.llm_service._create_gemini_client",
+        return_value=mock_client,
+    ):
+        with pytest.raises(RuntimeError, match="incomplete response"):
+            await generate_llm_response(
+                "Explain machine learning."
+            )
+
+
+# ============================================================
+# GEMINI ERROR HANDLING TESTS
+# ============================================================
+
+@pytest.mark.parametrize(
+    "api_error, expected_message",
+    [
+        ("429 resource_exhausted", "usage limit reached"),
+        ("503 unavailable", "temporarily unavailable"),
+        ("401 unauthorized", "authentication failed"),
+        ("403 permission denied", "access was denied"),
+        ("404 not_found", "unavailable"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_generate_llm_response_handles_api_errors(
+    api_error,
+    expected_message,
+):
+    mock_client = MagicMock()
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=Exception(api_error)
+    )
+
+    with patch(
+        "app.services.llm_service._create_gemini_client",
+        return_value=mock_client,
+    ):
+        with pytest.raises(RuntimeError, match=expected_message):
+            await generate_llm_response(
+                "Explain machine learning."
+            )
+
+
+@pytest.mark.asyncio
+async def test_generate_llm_response_handles_unexpected_error():
+    mock_client = MagicMock()
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=Exception("Unexpected failure")
+    )
+
+    with patch(
+        "app.services.llm_service._create_gemini_client",
+        return_value=mock_client,
+    ):
+        with pytest.raises(
+            RuntimeError,
+            match="could not obtain a response",
+        ):
+            await generate_llm_response(
+                "Explain machine learning."
+            )
+
+
+# ============================================================
+# CONFIGURATION VALIDATION TESTS
+# ============================================================
+
+@pytest.mark.asyncio
+async def test_rejects_missing_api_key():
+    with patch.object(llm_service, "GEMINI_API_KEY", ""):
+        with pytest.raises(RuntimeError, match="GEMINI_API_KEY is missing"):
+            await generate_llm_response(
+                "Explain machine learning."
+            )
+
+
+@pytest.mark.asyncio
+async def test_rejects_invalid_timeout():
+    with patch.object(llm_service, "GEMINI_TIMEOUT_SECONDS", 0):
+        with pytest.raises(RuntimeError, match="TIMEOUT_SECONDS"):
+            await generate_llm_response(
+                "Explain machine learning."
+            )
+
+
+@pytest.mark.asyncio
+async def test_rejects_invalid_temperature():
+    with patch.object(llm_service, "GEMINI_TEMPERATURE", 3):
+        with pytest.raises(RuntimeError, match="TEMPERATURE"):
+            await generate_llm_response(
+                "Explain machine learning."
+            )
+
+
+@pytest.mark.asyncio
+async def test_rejects_invalid_max_output_tokens():
+    with patch.object(llm_service, "GEMINI_MAX_OUTPUT_TOKENS", 0):
+        with pytest.raises(RuntimeError, match="MAX_OUTPUT_TOKENS"):
+            await generate_llm_response(
+                "Explain machine learning."
+            )
+
+
+========== tests\services\llm_providers\test_provider_router.py ==========
+import pytest
+
+from app.core.llm_provider_config import (
+    LLMProviderSettings,
+)
+
+from app.services.llm_providers.base import (
+    BaseLLMProvider,
+)
+
+from app.services.llm_providers.exceptions import (
+    LLMProviderUnavailableError,
+    LLMAllProvidersFailedError,
+)
+
+from app.services.llm_providers.provider_registry import (
+    LLMProviderRegistry,
+)
+
+from app.services.llm_providers.provider_router import (
+    LLMProviderRouter,
+)
+
+from app.schemas.llm_provider import (
+    LLMProviderStatus,
+)
+
+
+class SuccessfulProvider(BaseLLMProvider):
+
+    name = "primary"
+
+    async def generate(self, prompt):
+
+        return "Primary response."
+
+
+class FailingProvider(BaseLLMProvider):
+
+    name = "primary"
+
+    async def generate(self, prompt):
+
+        raise LLMProviderUnavailableError(
+            "Primary unavailable."
+        )
+
+
+class FallbackProvider(BaseLLMProvider):
+
+    name = "fallback"
+
+    async def generate(self, prompt):
+
+        return "Fallback response."
+
+
+class PermanentlyFailingProvider(BaseLLMProvider):
+
+    name = "primary"
+
+    async def generate(self, prompt):
+
+        raise RuntimeError(
+            "Permanent failure."
+        )
+
+
+@pytest.fixture
+def registry():
+
+    registry = LLMProviderRegistry()
+
+    return registry
+
+
+@pytest.mark.asyncio
+async def test_primary_provider_success(registry):
+
+    registry.register(
+        SuccessfulProvider()
+    )
+
+    router = LLMProviderRouter(
+        registry=registry,
+        settings=LLMProviderSettings(
+            primary_provider="primary",
+            fallback_providers=(),
+        ),
+    )
+
+    result = await router.generate(
+        "Explain binary search."
+    )
+
+    assert result.response == "Primary response."
+
+    assert result.provider == "primary"
+
+    assert result.status == LLMProviderStatus.SUCCESS
+
+    assert len(result.attempts) == 1
+
+
+@pytest.mark.asyncio
+async def test_fallback_provider_success(registry):
+
+    registry.register(
+        FailingProvider()
+    )
+
+    registry.register(
+        FallbackProvider()
+    )
+
+    router = LLMProviderRouter(
+        registry=registry,
+        settings=LLMProviderSettings(
+            primary_provider="primary",
+            fallback_providers=("fallback",),
+        ),
+    )
+
+    result = await router.generate(
+        "Explain binary search."
+    )
+
+    assert result.response == "Fallback response."
+
+    assert result.provider == "fallback"
+
+    assert result.status == (
+        LLMProviderStatus.FALLBACK_SUCCESS
+    )
+
+    assert len(result.attempts) == 2
+
+    assert result.attempts[0].retryable is True
+
+
+@pytest.mark.asyncio
+async def test_all_providers_unavailable(registry):
+
+    registry.register(
+        FailingProvider()
+    )
+
+    class SecondFailingProvider(BaseLLMProvider):
+
+        name = "fallback"
+
+        async def generate(self, prompt):
+
+            raise LLMProviderUnavailableError(
+                "Fallback unavailable."
+            )
+
+    registry.register(
+        SecondFailingProvider()
+    )
+
+    router = LLMProviderRouter(
+        registry=registry,
+        settings=LLMProviderSettings(
+            primary_provider="primary",
+            fallback_providers=("fallback",),
+        ),
+    )
+
+    with pytest.raises(LLMAllProvidersFailedError) as exc:
+
+        await router.generate(
+            "Explain binary search."
+        )
+
+    assert len(exc.value.attempts) == 2
+
+
+@pytest.mark.asyncio
+async def test_stops_after_non_retryable_failure(registry):
+
+    registry.register(
+        PermanentlyFailingProvider()
+    )
+
+    registry.register(
+        FallbackProvider()
+    )
+
+    router = LLMProviderRouter(
+        registry=registry,
+        settings=LLMProviderSettings(
+            primary_provider="primary",
+            fallback_providers=("fallback",),
+        ),
+    )
+
+    with pytest.raises(LLMAllProvidersFailedError) as exc:
+
+        await router.generate(
+            "Explain binary search."
+        )
+
+    assert len(exc.value.attempts) == 1
+
+
+@pytest.mark.asyncio
+async def test_rejects_empty_prompt(registry):
+
+    router = LLMProviderRouter(
+        registry=registry,
+        settings=LLMProviderSettings(
+            primary_provider="primary",
+            fallback_providers=(),
+        ),
+    )
+
+    with pytest.raises(ValueError):
+
+        await router.generate("   ")
+
+
+@pytest.mark.asyncio
+async def test_rejects_unregistered_fallback(registry):
+
+    registry.register(
+        SuccessfulProvider()
+    )
+
+    router = LLMProviderRouter(
+        registry=registry,
+        settings=LLMProviderSettings(
+            primary_provider="primary",
+            fallback_providers=("missing",),
+        ),
+    )
+
+    from app.services.llm_providers.exceptions import (
+        LLMProviderConfigurationError,
+    )
+
+    with pytest.raises(LLMProviderConfigurationError):
+
+        await router.generate(
+            "Explain binary search."
+        )
+
+========== tests\services\rag\test_rag_service.py ==========
+
+import uuid
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+from app.schemas.retrieval import (
+    RetrievalRequest,
+    RetrievedChunkResponse,
+)
+from app.services.rag.rag_service import RAGService
+
+
+@pytest.fixture
+def user_id():
+    return uuid.uuid4()
+
+
+@pytest.fixture
+def document_id():
+    return uuid.uuid4()
+
+
+@pytest.fixture
+def db():
+    return Mock()
+
+
+@pytest.fixture
+def rag_request():
+    return RetrievalRequest(
+        query="Explain binary search",
+        limit=5,
+    )
+
+
+@pytest.fixture
+def retrieved_chunk(document_id):
+    return RetrievedChunkResponse.model_construct(
+        chunk_id=uuid.uuid4(),
+        document_id=document_id,
+        chunk_index=0,
+        text="Binary search repeatedly divides a sorted search space.",
+        page_numbers=[5],
+        start_page=5,
+        end_page=5,
+        similarity=0.92,
+        distance=0.08,
+        provider="gemini",
+        model="gemini-embedding-2",
+        dimensions=1536,
+        pipeline_version="1.0",
+        chunking_version="1.0",
+    )
+
+
+@pytest.fixture
+def safety_allowed(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.rag.rag_service.evaluate_message",
+        lambda message: SimpleNamespace(
+            allowed=True,
+            category="safe",
+            response=None,
+        ),
+    )
+
+    monkeypatch.setattr(
+        "app.services.rag.rag_service.validate_output",
+        lambda answer: SimpleNamespace(
+            allowed=True,
+            response=None,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_safety_rejection_prevents_retrieval(
+    db, user_id, rag_request, monkeypatch
+):
+    retrieval = Mock()
+    retrieval.search = AsyncMock()
+
+    llm = AsyncMock()
+
+    monkeypatch.setattr(
+        "app.services.rag.rag_service.evaluate_message",
+        lambda message: SimpleNamespace(
+            allowed=False,
+            category="unsafe",
+            response="Request rejected.",
+        ),
+    )
+
+    service = RAGService(retrieval, llm)
+
+    result = await service.ask(db, user_id, rag_request)
+
+    assert result.answer == "Request rejected."
+    assert result.total_retrieved == 0
+    retrieval.search.assert_not_called()
+    llm.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_empty_retrieval_returns_insufficient_evidence(
+    db, user_id, rag_request, safety_allowed
+):
+    retrieval = Mock()
+    retrieval.search = AsyncMock(return_value=[])
+
+    llm = AsyncMock()
+
+    service = RAGService(retrieval, llm)
+
+    result = await service.ask(db, user_id, rag_request)
+
+    assert result.total_retrieved == 0
+    assert result.grounded is False
+    assert "could not find relevant information" in result.answer.lower()
+
+    llm.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_retrieved_context_is_passed_to_llm(
+    db, user_id, rag_request, retrieved_chunk, safety_allowed
+):
+    retrieval = Mock()
+    retrieval.search = AsyncMock(return_value=[retrieved_chunk])
+
+    llm = AsyncMock(
+        return_value="Binary search divides the search space."
+    )
+
+    service = RAGService(retrieval, llm)
+
+    result = await service.ask(db, user_id, rag_request)
+
+    llm.assert_awaited_once()
+
+    prompt = llm.await_args.args[0]
+
+    assert "Binary search" in prompt
+    assert "document_content" in prompt
+    assert "[EVIDENCE S1]" in prompt
+    assert result.answer == "Binary search divides the search space."
+@pytest.mark.asyncio
+async def test_successful_generation_returns_retrieved_evidence(
+    db, user_id, rag_request, retrieved_chunk, safety_allowed
+):
+    retrieval = Mock()
+    retrieval.search = AsyncMock(return_value=[retrieved_chunk])
+
+    llm = AsyncMock(
+        return_value="Binary search is an efficient algorithm. [S1]"
+
+    )
+
+    service = RAGService(retrieval, llm)
+
+    result = await service.ask(db, user_id, rag_request)
+
+    assert result.total_retrieved == 1
+    assert result.grounded is True
+    assert len(result.retrieved_chunks) == 1
+
+    assert (
+        result.retrieved_chunks[0].document_id
+        == retrieved_chunk.document_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_sensitive_generated_output_is_rejected(
+    db, user_id, rag_request, retrieved_chunk, monkeypatch
+):
+    retrieval = Mock()
+    retrieval.search = AsyncMock(return_value=[retrieved_chunk])
+
+    llm = AsyncMock(return_value="Sensitive output")
+
+    monkeypatch.setattr(
+        "app.services.rag.rag_service.evaluate_message",
+        lambda message: SimpleNamespace(
+            allowed=True,
+            category="safe",
+            response=None,
+        ),
+    )
+
+    monkeypatch.setattr(
+        "app.services.rag.rag_service.validate_output",
+        lambda answer: SimpleNamespace(
+            allowed=False,
+            response="Output blocked.",
+        ),
+    )
+
+    service = RAGService(retrieval, llm)
+
+    result = await service.ask(db, user_id, rag_request)
+
+    assert result.answer == "Output blocked."
+    assert result.grounded is False
+
+
+@pytest.mark.asyncio
+async def test_retrieval_uses_authenticated_user_id(
+    db, user_id, rag_request, retrieved_chunk, safety_allowed
+):
+    retrieval = Mock()
+    retrieval.search = AsyncMock(return_value=[retrieved_chunk])
+
+    llm = AsyncMock(
+        return_value="Answer based on retrieved evidence."
+    )
+
+    service = RAGService(retrieval, llm)
+
+    await service.ask(db, user_id, rag_request)
+
+    retrieval.search.assert_awaited_once_with(
+        db=db,
+        user_id=user_id,
+        request=rag_request,
+    )
+

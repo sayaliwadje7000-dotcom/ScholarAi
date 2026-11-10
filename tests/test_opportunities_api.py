@@ -10,7 +10,12 @@ from app.api.opportunities import (
     get_opportunity_registry,
     build_opportunity_services,
 )
+import uuid
+from types import SimpleNamespace
 
+from app.api.dependencies import get_current_user
+from app.database.session import get_db
+from app.services.role_service import role_service
 
 class MockRegistry:
 
@@ -154,10 +159,25 @@ class MockRankingService:
 
 @pytest.fixture
 def client(monkeypatch):
+    user = SimpleNamespace(
+        id=uuid.uuid4(),
+        is_active=True,
+    )
+
+    previous_overrides = dict(app.dependency_overrides)
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: object()
 
     app.dependency_overrides[
         get_opportunity_registry
     ] = lambda request: MockRegistry()
+
+    monkeypatch.setattr(
+        role_service,
+        "get_user_roles",
+        lambda db, user_id: {"student"},
+    )
 
     monkeypatch.setattr(
         "app.api.opportunities.build_opportunity_services",
@@ -168,11 +188,12 @@ def client(monkeypatch):
         ),
     )
 
-    with TestClient(app) as test_client:
-        yield test_client
-
-    app.dependency_overrides.clear()
-
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(previous_overrides)
 
 def test_opportunity_categories(client):
 

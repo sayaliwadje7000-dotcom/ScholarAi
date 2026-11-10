@@ -83,18 +83,29 @@ class RecommendationFeedbackCreate(BaseModel):
 
     @field_validator("feedback_type")
     @classmethod
-    def validate_feedback_type(cls, value):
+    def validate_feedback_type(cls, value: str) -> str:
+        normalized = value.strip().lower()
+
         allowed = {
             "helpful",
             "not_helpful",
             "irrelevant",
         }
 
-        if value not in allowed:
+        if normalized not in allowed:
             raise ValueError("Invalid feedback type.")
 
-        return value.strip()
+        return normalized
 
+    @field_validator("comment")
+    @classmethod
+    def normalize_comment(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+
+        normalized = value.strip()
+
+        return normalized or None
         
 
 

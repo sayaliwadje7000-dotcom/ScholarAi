@@ -4,10 +4,36 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+import uuid
+from types import SimpleNamespace
 
+from app.api.dependencies import get_current_user
+from app.database.session import get_db
+from app.services.role_service import role_service
 
 client = TestClient(app)
+@pytest.fixture(autouse=True)
+def authenticated_test_user(monkeypatch):
+    user = SimpleNamespace(
+        id=uuid.uuid4(),
+        is_active=True,
+    )
 
+    previous_overrides = dict(app.dependency_overrides)
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: object()
+
+    monkeypatch.setattr(
+        role_service,
+        "get_user_roles",
+        lambda db, user_id: {"student"},
+    )
+
+    yield
+
+    app.dependency_overrides.clear()
+    app.dependency_overrides.update(previous_overrides)
 
 # ---------------------------------------------------------
 # HOME AND HEALTH ENDPOINT TESTS

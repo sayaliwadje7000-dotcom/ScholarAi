@@ -94,6 +94,7 @@ def run_migrations_online():
     connectable = create_engine(
         database_url,
         poolclass=pool.NullPool,
+        connect_args={"connect_timeout": 10},
     )
 
     try:

@@ -1,15 +1,18 @@
-"use strict";
+﻿"use strict";
 
 /**
  * ScholarAI Frontend API Client
- * Phase 5: LLM Integration
+ * Docker-compatible same-origin API configuration.
  */
 
 (function () {
-    const API_BASE_URL = "http://127.0.0.1:8000";
+
+    const API_BASE_URL = "";
+
     const REQUEST_TIMEOUT_MS = 660000;
 
     async function request(endpoint, options = {}) {
+
         const controller = new AbortController();
 
         const timeoutId = window.setTimeout(() => {
@@ -17,6 +20,7 @@
         }, REQUEST_TIMEOUT_MS);
 
         try {
+
             const response = await fetch(
                 `${API_BASE_URL}${endpoint}`,
                 {
@@ -24,9 +28,11 @@
                     signal: controller.signal,
                     headers: {
                         Accept: "application/json",
+
                         ...(options.body
                             ? { "Content-Type": "application/json" }
                             : {}),
+
                         ...options.headers,
                     },
                 }
@@ -42,25 +48,32 @@
             }
 
             if (!response.ok) {
-                let message = `Request failed (${response.status}).`;
+
+                let message =
+                    `Request failed (${response.status}).`;
 
                 if (
                     data &&
                     Array.isArray(data.detail) &&
                     data.detail.length > 0
                 ) {
+
                     message = data.detail
-                        .map((error) => error.msg || "Invalid request.")
+                        .map(error => error.msg || "Invalid request.")
                         .join(" ");
+
                 } else if (
                     data &&
                     typeof data.detail === "string"
                 ) {
+
                     message = data.detail;
                 }
 
                 const error = new Error(message);
+
                 error.status = response.status;
+
                 throw error;
             }
 
@@ -71,7 +84,9 @@
             }
 
             return data;
+
         } catch (error) {
+
             if (error.name === "AbortError") {
                 throw new Error(
                     "The request took too long. Please try again."
@@ -80,20 +95,26 @@
 
             if (error instanceof TypeError) {
                 throw new Error(
-                    "Unable to connect to ScholarAI. " +
-                    "Make sure the backend is running at " +
-                    "http://127.0.0.1:8000."
+                    "Unable to connect to ScholarAI. Please check your connection."
                 );
             }
 
             throw error;
+
         } finally {
+
             window.clearTimeout(timeoutId);
         }
     }
 
-    async function sendChatMessage(message, conversationId = null) {
-        const trimmedMessage = String(message || "").trim();
+
+    async function sendChatMessage(
+        message,
+        conversationId = null
+    ) {
+
+        const trimmedMessage =
+            String(message || "").trim();
 
         if (!trimmedMessage) {
             throw new Error(
@@ -112,10 +133,13 @@
             conversation_id: conversationId || null,
         };
 
-        const data = await request("/api/v1/chat", {
-            method: "POST",
-            body: JSON.stringify(payload),
-        });
+        const data = await request(
+            "/api/v1/chat",
+            {
+                method: "POST",
+                body: JSON.stringify(payload),
+            }
+        );
 
         if (
             data.status !== "success" ||
@@ -130,12 +154,15 @@
         return data;
     }
 
+
     async function checkHealth() {
         return request("/health");
     }
+
 
     window.ScholarAIAPI = Object.freeze({
         sendChatMessage,
         checkHealth,
     });
+
 })();

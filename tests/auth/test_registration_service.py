@@ -28,9 +28,9 @@ def test_register_user_success(monkeypatch):
 
     db.scalar.return_value = None
 
-    db.refresh.side_effect = (
-        lambda user: setattr(
-            user,
+    db.flush.side_effect = (
+        lambda: setattr(
+            db.add.call_args.args[0],
             "id",
             __import__("uuid").uuid4(),
         )
@@ -51,7 +51,12 @@ def test_register_user_success(monkeypatch):
 
     assert user.password_hash != "SecurePassword123!"
 
-    db.add.assert_called_once_with(user)
+    assert db.add.call_count == 2
+    assert db.add.call_args_list[0].args[0] is user
+
+    student_role = db.add.call_args_list[1].args[0]
+    assert student_role.role == "student"
+    assert student_role.user_id == user.id
 
     db.commit.assert_called_once()
 

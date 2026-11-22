@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.user import User
+from app.models.user_role import UserRole
 
 from app.schemas.auth import (
     UserLoginRequest,
@@ -81,6 +82,14 @@ class AuthService:
         try:
 
             db.add(user)
+            db.flush()
+
+            db.add(
+                UserRole(
+                    user_id=user.id,
+                    role="student",
+                )
+            )
 
             db.commit()
 

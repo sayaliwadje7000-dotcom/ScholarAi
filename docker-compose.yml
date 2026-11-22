@@ -1,0 +1,169 @@
+services:
+
+  db:
+    image: pgvector/pgvector:pg16
+
+    container_name: scholarai-db
+
+    ports:
+      - "127.0.0.1:5433:5432"
+
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-scholarai}
+      POSTGRES_USER: ${POSTGRES_USER:-scholarai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+
+    volumes:
+      - scholarai_postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"
+
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+    networks:
+      - scholarai_internal
+
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: scholarai-migrate
+
+    restart: "no"
+
+    command:
+      - alembic
+      - upgrade
+      - head
+
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      SCHOLARAI_ENVIRONMENT: ${SCHOLARAI_ENVIRONMENT:-development}
+      SCHOLARAI_JWT_SECRET_KEY: ${SCHOLARAI_JWT_SECRET_KEY:?SCHOLARAI_JWT_SECRET_KEY must be set}
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    networks:
+      - scholarai_internal
+
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: scholarai-backend
+
+    restart: unless-stopped
+
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      SCHOLARAI_ENVIRONMENT: ${SCHOLARAI_ENVIRONMENT:-development}
+      SCHOLARAI_JWT_SECRET_KEY: ${SCHOLARAI_JWT_SECRET_KEY:?SCHOLARAI_JWT_SECRET_KEY must be set}
+
+      SCHOLARAI_FRONTEND_ORIGIN: ${SCHOLARAI_FRONTEND_ORIGIN:-http://localhost:8080}
+
+      SCHOLARAI_BACKEND_HOST: 0.0.0.0
+      SCHOLARAI_BACKEND_PORT: 8000
+
+      DOCUMENT_STORAGE_ROOT: /app/storage
+
+      MAX_DOCUMENT_SIZE_BYTES: ${MAX_DOCUMENT_SIZE_BYTES:-20971520}
+      MAX_DOCUMENT_PAGES: ${MAX_DOCUMENT_PAGES:-100}
+      CREATE_DOCUMENT_STORAGE: ${CREATE_DOCUMENT_STORAGE:-true}
+
+      TESSERACT_CMD: /usr/bin/tesseract
+      OCR_LANGUAGE: ${OCR_LANGUAGE:-eng}
+      OCR_DPI: ${OCR_DPI:-300}
+      OCR_TIMEOUT_SECONDS: ${OCR_TIMEOUT_SECONDS:-60}
+      OCR_MINIMUM_CONFIDENCE: ${OCR_MINIMUM_CONFIDENCE:-40}
+      OCR_FORCE: ${OCR_FORCE:-false}
+
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+
+    volumes:
+      - scholarai_document_storage:/app/storage
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+      migrate:
+        condition: service_completed_successfully
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"
+
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    networks:
+      - scholarai_internal
+
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+
+    container_name: scholarai-frontend
+
+    restart: unless-stopped
+
+    ports:
+      - "8080:80"
+
+    depends_on:
+      backend:
+        condition: service_healthy
+
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://127.0.0.1/nginx-health
+
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+    networks:
+      - scholarai_internal
+
+
+volumes:
+
+  scholarai_postgres_data:
+    name: scholarai_postgres_data
+
+  scholarai_document_storage:
+    name: scholarai_document_storage
+
+
+networks:
+
+  scholarai_internal:
+    name: scholarai_internal
+    driver: bridge

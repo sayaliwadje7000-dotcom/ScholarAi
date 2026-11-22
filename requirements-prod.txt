@@ -1,0 +1,39 @@
+﻿# ScholarAI production dependencies
+
+# Backend
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+
+# Database
+SQLAlchemy>=2.0,<3.0
+alembic>=1.13,<2.0
+psycopg[binary]>=3.2,<4.0
+pgvector>=0.3,<1.0
+
+# Configuration and validation
+python-dotenv>=1.0,<2.0
+pydantic>=2.0,<3.0
+email-validator>=2.0,<3.0
+
+# Authentication
+PyJWT[crypto]>=2.10,<3.0
+argon2-cffi>=23.1,<26.0
+cryptography>=44,<51
+
+# HTTP and LLM integrations
+httpx>=0.27,<1.0
+requests>=2.31,<3.0
+google-genai>=1.0,<3.0
+
+# Document processing and OCR
+PyMuPDF>=1.24,<3.0
+pytesseract>=0.3.10,<1.0
+Pillow>=10,<13
+python-multipart>=0.0.9,<1.0
+
+# Machine learning
+numpy>=2.0,<3.0
+pandas>=2.2,<4.0
+scipy>=1.13,<2.0
+scikit-learn>=1.5,<2.0
+joblib>=1.4,<2.0

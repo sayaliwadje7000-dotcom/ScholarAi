@@ -83,6 +83,10 @@ jobs:
           print("Python compilation successful.")
           PY
 
+      - name: Enable PostgreSQL extensions
+        run: |
+          PGPASSWORD=ci-test-password psql -h 127.0.0.1 -U scholarai -d scholarai_test -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
       - name: Verify Alembic migrations
         run: |
           python -m alembic heads
@@ -103,3 +107,4 @@ jobs:
 
       - name: Build production Docker image
         run: docker build --pull -t scholarai-backend:ci .
+

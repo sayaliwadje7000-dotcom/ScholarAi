@@ -38,38 +38,29 @@ def fault_tolerant_client():
 
 
 def get_rag_ask_path():
-    matching_routes = [
-        route
-        for route in app.routes
-        if getattr(route, "path", "").endswith("/ask")
-        and "POST" in getattr(route, "methods", set())
+    paths = app.openapi().get("paths", {})
+    matching_paths = [
+        path for path, operations in paths.items()
+        if path.endswith("/ask") and "post" in operations
+        and "/rag/" in path
     ]
 
-    assert matching_routes, "POST RAG /ask endpoint was not registered."
-
-    return matching_routes[0].path
+    assert matching_paths, "POST RAG /ask endpoint was not registered."
+    return matching_paths[0]
 
 
 def test_rag_api_handles_internal_service_failure(fault_tolerant_client):
     response = fault_tolerant_client.post(
         get_rag_ask_path(),
-        json={
-            "query": "Explain machine learning",
-            "limit": 5,
-        },
+        json={"query": "Explain machine learning", "limit": 5},
     )
-
     assert response.status_code == 503
 
 
 def test_rag_api_failure_returns_json(fault_tolerant_client):
     response = fault_tolerant_client.post(
         get_rag_ask_path(),
-        json={
-            "query": "Explain database indexing",
-            "limit": 5,
-        },
+        json={"query": "Explain database indexing", "limit": 5},
     )
-
     assert response.status_code == 503
     assert response.headers["content-type"].startswith("application/json")

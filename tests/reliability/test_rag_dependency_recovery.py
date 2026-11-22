@@ -10,13 +10,38 @@ def clear_rag_dependency_cache():
     rag_dependencies.get_rag_service.cache_clear()
 
 
+@pytest.fixture
+def fake_rag_dependencies(monkeypatch):
+    class FakeEmbeddingService:
+        pass
+
+    class FakeRetrievalService:
+        def __init__(self, embedding_service):
+            self.embedding_service = embedding_service
+
+    class FakeRAGService:
+        def __init__(self, retrieval_service):
+            self.retrieval_service = retrieval_service
+
+    monkeypatch.setattr(
+        rag_dependencies, "EmbeddingService", FakeEmbeddingService
+    )
+    monkeypatch.setattr(
+        rag_dependencies, "RetrievalService", FakeRetrievalService
+    )
+    monkeypatch.setattr(
+        rag_dependencies, "RAGService", FakeRAGService
+    )
+
+    return FakeEmbeddingService, FakeRetrievalService, FakeRAGService
+
+
 def test_rag_dependency_can_recover_after_initialization_failure(monkeypatch):
     attempts = {"embedding": 0}
 
     class FakeEmbeddingService:
         def __init__(self):
             attempts["embedding"] += 1
-
             if attempts["embedding"] == 1:
                 raise RuntimeError(
                     "Temporary embedding initialization failure"
@@ -31,19 +56,13 @@ def test_rag_dependency_can_recover_after_initialization_failure(monkeypatch):
             self.retrieval_service = retrieval_service
 
     monkeypatch.setattr(
-        rag_dependencies,
-        "EmbeddingService",
-        FakeEmbeddingService,
+        rag_dependencies, "EmbeddingService", FakeEmbeddingService
     )
     monkeypatch.setattr(
-        rag_dependencies,
-        "RetrievalService",
-        FakeRetrievalService,
+        rag_dependencies, "RetrievalService", FakeRetrievalService
     )
     monkeypatch.setattr(
-        rag_dependencies,
-        "RAGService",
-        FakeRAGService,
+        rag_dependencies, "RAGService", FakeRAGService
     )
 
     with pytest.raises(
@@ -55,21 +74,18 @@ def test_rag_dependency_can_recover_after_initialization_failure(monkeypatch):
     recovered_service = rag_dependencies.get_rag_service()
 
     assert isinstance(recovered_service, FakeRAGService)
-    assert isinstance(
-        recovered_service.retrieval_service,
-        FakeRetrievalService,
-    )
+    assert isinstance(recovered_service.retrieval_service, FakeRetrievalService)
     assert attempts["embedding"] == 2
 
 
-def test_recovered_rag_dependency_is_cached():
+def test_recovered_rag_dependency_is_cached(fake_rag_dependencies):
     first_service = rag_dependencies.get_rag_service()
     second_service = rag_dependencies.get_rag_service()
 
     assert first_service is second_service
 
 
-def test_rag_dependency_cache_can_be_cleared():
+def test_rag_dependency_cache_can_be_cleared(fake_rag_dependencies):
     first_service = rag_dependencies.get_rag_service()
 
     rag_dependencies.get_rag_service.cache_clear()
